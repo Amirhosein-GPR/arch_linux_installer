@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::process;
 
 const MAX_LINE_LENGTH: u8 = 64;
-const INSTALLATION_STEPS_COUNT: u8 = 29;
+const INSTALLATION_STEPS_COUNT: u8 = 30;
 
 enum PrintFormat {
     Bordered,
@@ -15,46 +15,6 @@ enum PrintFormat {
 
 struct Question {
     answer: String,
-}
-
-#[derive(Debug)]
-enum AppError {
-    ExternalError(String),
-}
-
-struct AppConfig {
-    uefi_install: bool,
-    uefi_partition: Option<String>,
-    boot_partition: Option<String>,
-    root_partition: String,
-    home_partition: Option<String>,
-    username: String,
-}
-
-struct InstallationStatus {
-    step: u8,
-    total_steps: u8,
-}
-
-impl AppConfig {
-    fn new() -> Self {
-        Self {
-            uefi_install: false,
-            uefi_partition: None,
-            boot_partition: None,
-            root_partition: String::new(),
-            home_partition: None,
-            username: String::new(),
-        }
-    }
-}
-
-impl error::Error for AppError {}
-
-impl fmt::Display for AppError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self)
-    }
 }
 
 impl Question {
@@ -94,13 +54,62 @@ impl Question {
             io::stdout().flush().unwrap();
             io::stdin().read_line(&mut self.answer).unwrap();
             self.answer = self.answer.trim().to_string();
-            if let Ok(_num) = self.answer.parse::<u8>() {
-                break;
+            if let Ok(num) = self.answer.parse::<u8>() {
+                if num <= choices.len() as u8 && num > 0 {
+                    break;
+                }
             } else {
                 println!("\nError: Enter only the number!\n");
             }
         }
     }
+}
+
+#[derive(Debug)]
+enum AppError {
+    InternalError(String),
+    ExternalError(String),
+}
+
+impl error::Error for AppError {}
+
+impl fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+impl From<io::Error> for AppError {
+    fn from(value: io::Error) -> Self {
+        Self::InternalError(value.to_string())
+    }
+}
+
+struct AppConfig {
+    uefi_install: bool,
+    uefi_partition: Option<String>,
+    boot_partition: Option<String>,
+    root_partition: String,
+    home_partition: Option<String>,
+    username: String,
+}
+
+impl AppConfig {
+    fn new() -> Self {
+        Self {
+            uefi_install: false,
+            uefi_partition: None,
+            boot_partition: None,
+            root_partition: String::new(),
+            home_partition: None,
+            username: String::new(),
+        }
+    }
+}
+
+struct InstallationStatus {
+    step: u8,
+    total_steps: u8,
 }
 
 impl InstallationStatus {
@@ -112,6 +121,7 @@ impl InstallationStatus {
     }
 
     fn print(&mut self, text: &str) {
+        ColorManager::set_color(Color::Blue);
         self.step += 1;
 
         let mut remaining_line_length = MAX_LINE_LENGTH - text.len() as u8;
@@ -142,7 +152,46 @@ impl InstallationStatus {
         } else {
             println!("{}> [{percentage}%] <{}\n", format_string, format_string);
         }
+        ColorManager::reset_color();
     }
+}
+
+// Colors encoded in ANSI escape code
+#[derive(Clone, Copy)]
+enum Color {
+    Reset,
+    Black = 30,
+    Red,
+    Green,
+    Yellow,
+    Blue,
+    Magenta,
+    Cyan,
+    White,
+    Default = 39,
+}
+
+impl fmt::Display for Color {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", *self as u8)
+    }
+}
+
+struct ColorManager;
+
+impl ColorManager {
+    fn set_color(color: Color) {
+        print!("\x1b[0;{color}m");
+    }
+
+    fn reset_color() {
+        print!("\x1b[0;{}m", Color::Default);
+    }
+}
+
+enum OperationResult {
+    Done,
+    Error,
 }
 
 fn main() -> Result<(), AppError> {
@@ -151,15 +200,20 @@ fn main() -> Result<(), AppError> {
     // 0. Printing Welcome messages and asking user if he is sure to begin the process.
     {
         print!("\n\n\n\n\n\n\n\n\n\n");
+        ColorManager::set_color(Color::Red);
         formatted_print("Arch Linux install script", PrintFormat::Bordered);
-        formatted_print("(Version 0.1.1-alpha)", PrintFormat::DoubleDashedLine);
+        ColorManager::set_color(Color::Green);
+        formatted_print("(Version 0.1.2-alpha)", PrintFormat::DoubleDashedLine);
+        ColorManager::set_color(Color::Blue);
         formatted_print("Made by Amirhosein_GPR", PrintFormat::Bordered);
         print!("\n\n\n\n\n\n\n\n\n\n");
 
+        ColorManager::set_color(Color::Magenta);
         formatted_print(
             format!("Total installation steps: {INSTALLATION_STEPS_COUNT}").as_str(),
             PrintFormat::DoubleDashedLine,
         );
+        ColorManager::reset_color();
 
         if !question.bool_ask("Do you want to continue?") {
             return Ok(());
@@ -169,7 +223,7 @@ fn main() -> Result<(), AppError> {
     // Initializing app_config struct to use it in various parts of the program.
     let mut app_config = AppConfig::new();
     let mut installation_status = InstallationStatus::new(INSTALLATION_STEPS_COUNT);
-    // Command set 1
+    // Code set 1
     {
         installation_status.print("BIOS / UEFI Installation mode");
 
@@ -177,17 +231,21 @@ fn main() -> Result<(), AppError> {
         if question.answer == "2" {
             app_config.uefi_install = true;
         }
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 2
+    // Code set 2
     {
         installation_status.print("Configuring timedatectl");
 
         run_command("timedatectl", Some(&["set-ntp", "true"]))?;
         run_command("timedatectl", Some(&["status"]))?;
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 3
+    // Code set 3
     {
         installation_status.print("Configuring partitions");
 
@@ -199,12 +257,14 @@ fn main() -> Result<(), AppError> {
             Some(&[format!("/dev/{}", question.answer).as_str()]),
         )?;
 
-        println!("Partitioning results:");
+        println!("Partitioning results:\n");
 
         run_command("lsblk", None)?;
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 4
+    // Code set 4
     {
         installation_status.print("Getting partition names");
 
@@ -225,9 +285,11 @@ fn main() -> Result<(), AppError> {
             question.ask("Enter the name of your home partition: ");
             app_config.home_partition = Some(question.answer.clone());
         }
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 5
+    // Code set 5
     {
         installation_status.print("Formatting partitions");
 
@@ -264,9 +326,11 @@ fn main() -> Result<(), AppError> {
                 )?;
             }
         }
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 6
+    // Code set 6
     {
         installation_status.print("Enabling swap");
 
@@ -282,9 +346,11 @@ fn main() -> Result<(), AppError> {
                 Some(&[format!("/dev/{}", question.answer).as_str()]),
             )?;
         }
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 7
+    // Code set 7
     {
         installation_status.print("Mounting partitions");
 
@@ -297,7 +363,7 @@ fn main() -> Result<(), AppError> {
         )?;
 
         if let Some(boot_partition) = app_config.boot_partition {
-            run_command("mkdir", Some(&["/mnt/boot"]))?;
+            run_command("mkdir", Some(&["-p", "/mnt/boot"]))?;
             run_command(
                 "mount",
                 Some(&[format!("/dev/{}", boot_partition).as_str(), "/mnt/boot"]),
@@ -305,7 +371,7 @@ fn main() -> Result<(), AppError> {
         }
 
         if let Some(uefi_partition) = app_config.uefi_partition {
-            run_command("mkdir", Some(&["/mnt/boot/EFI"]))?;
+            run_command("mkdir", Some(&["-p", "/mnt/boot/EFI"]))?;
             run_command(
                 "mount",
                 Some(&[format!("/dev/{}", uefi_partition).as_str(), "/mnt/boot/EFI"]),
@@ -313,20 +379,22 @@ fn main() -> Result<(), AppError> {
         }
 
         if let Some(home_partition) = app_config.home_partition {
-            run_command("mkdir", Some(&["/mnt/home"]))?;
+            run_command("mkdir", Some(&["-p", "/mnt/home"]))?;
             run_command(
                 "mount",
                 Some(&[format!("/dev/{}", home_partition).as_str(), "/mnt/home"]),
             )?;
         }
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 8
+    // Code set 8
     {
         installation_status.print("Updating mirrors");
 
         question.ask(
-        "Enter the name of your prefered country for mirrirs. (Like this: France,Germany,...) : ",
+        "Enter the name of your prefered country for mirrors. (For example: France,Germany,...): ",
     );
         run_command(
             "reflector",
@@ -343,9 +411,31 @@ fn main() -> Result<(), AppError> {
                 "/etc/pacman.d/mirrorlist",
             ]),
         )?;
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 9
+    // Code set 9
+    {
+        installation_status.print("Configuring pacman");
+
+        fs::write(
+            "/etc/pacman.conf",
+            fs::read_to_string("/etc/pacman.conf")
+                .expect("Error reading from /etc/pacman.conf")
+                .replace("#Color", "Color")
+                .replace("#VerbosePkgLists", "VerbosePkgLists")
+                .replace(
+                    "#ParallelDownloads = 5",
+                    "ParallelDownloads = 5\nILoveCandy",
+                ),
+        )
+        .expect("Error writing to /etc/pacman.conf");
+
+        print_operation_result(OperationResult::Done);
+    }
+
+    // Code set 10
     {
         installation_status.print("Starting to install base system and some softwares");
 
@@ -368,133 +458,254 @@ fn main() -> Result<(), AppError> {
                 "base-devel",
             ]),
         )?;
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 10
+    // Code set 11
     {
         installation_status.print("Generating file system table");
 
-        run_command("genfstab", Some(&["-U", "/mnt", ">", "/mnt/etc/fstab"]))?;
+        let output = String::from_utf8(
+            process::Command::new("genfstab")
+                .args(["-U", "/mnt"])
+                .output()?
+                .stdout,
+        )
+        .expect("Error: Can't make string from vector of bytes.");
+
+        fs::write("/mnt/etc/fstab", output).expect("Error writing to /mnt/etc/fstab");
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 11
+    // Code set 12
     {
-        installation_status.print("Changing current root to the installed system root");
+        installation_status.print("Configuring pacman for installed system");
 
-        run_command("arch-chroot", Some(&["/mnt"]))?;
+        fs::write(
+            "/mnt/etc/pacman.conf",
+            fs::read_to_string("/mnt/etc/pacman.conf")
+                .expect("Error reading from /mnt/etc/pacman.conf")
+                .replace("#Color", "Color")
+                .replace("#VerbosePkgLists", "VerbosePkgLists")
+                .replace(
+                    "#ParallelDownloads = 5",
+                    "ParallelDownloads = 5\nILoveCandy",
+                ),
+        )
+        .expect("Error writing to /mnt/etc/pacman.conf");
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 12
+    // Code set 13
     {
         installation_status.print("Setting time zone");
 
+        loop {
+            question.ask("Enter your time zone. (For example: Europe/London): ");
+            if !question.answer.contains("/") {
+                print_operation_result(OperationResult::Error);
+                if question.bool_ask("Please enter a forward slash (/) between the continent and city name. Do you want to enter the time zone again?") {
+                    continue;
+                } else {
+                    ColorManager::set_color(Color::Red);
+                    formatted_print("Installation failed.", PrintFormat::Bordered);
+                    return Err(AppError::InternalError(String::from("Error! Internal process exited. Setting time zone failed.")));
+                }
+            }
+
+            break;
+        }
+
+        let time_zone_parts = question.answer.split("/").collect::<Vec<_>>();
         run_command(
-            "ln",
+            "arch-chroot",
             Some(&[
+                "/mnt",
+                "ln",
                 "-sf",
-                "/mnt/etc/usr/share/zoneinfo/Asia/Tehran",
+                format!(
+                    "/mnt/etc/usr/share/zoneinfo/{}/{}",
+                    time_zone_parts[0], time_zone_parts[1]
+                )
+                .as_str(),
                 "/etc/localtime",
             ]),
         )?;
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 13
+    // Code set 14
     {
         installation_status.print("Setting hardware clock");
 
-        run_command("hwclock", Some(&["--systohc"]))?;
+        run_command("arch-chroot", Some(&["/mnt", "hwclock", "--systohc"]))?;
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 14
+    // Code set 15
     {
         installation_status.print("Setting local");
 
         fs::write(
-            "/etc/locale.gen",
-            fs::read_to_string("/etc/locale.gen")
-                .expect("Error reading from /etc/locale.gen")
+            "/mnt/etc/locale.gen",
+            fs::read_to_string("/mnt/etc/locale.gen")
+                .expect("Error reading from /mnt/etc/locale.gen")
                 .replace("#en_US.UTF-8 UTF-8", "en_US.UTF-8 UTF-8"),
         )
-        .expect("Error writing to /etc/locale.gen");
+        .expect("Error writing to /mnt/etc/locale.gen");
 
-        run_command("locale-gen", None)?;
+        run_command("arch-chroot", Some(&["/mnt", "locale-gen"]))?;
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 15
+    // Code set 16
     {
         installation_status.print("Setting host name");
 
-        question.ask("Enter your host name");
-        fs::write("/etc/hostname", question.answer.clone())
-            .expect("Error writing to /etc/hostname");
+        question.ask("Enter your host name: ");
+        fs::write("/mnt/etc/hostname", question.answer.clone())
+            .expect("Error writing to /mnt/etc/hostname");
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 16
+    // Code set 17
     {
         installation_status.print("Setting hosts configuaration");
 
         fs::write(
-            "/etc/hosts",
+            "/mnt/etc/hosts",
             format!(
                 "127.0.0.1\tlocalhost\n::1 \t\tlocalhost\n127.0.1.1\t{}.localdomain\t{}",
                 question.answer, question.answer
             ),
         )
-        .expect("Error writing to /etc/hosts");
+        .expect("Error writing to /mnt/etc/hosts");
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 17
+    // Code set 18
     {
         installation_status.print("Setting root pasword");
 
-        run_command("passwd", None)?;
+        loop {
+            if let Err(error) = run_command("arch-chroot", Some(&["/mnt", "passwd"])) {
+                print_operation_result(OperationResult::Error);
+                if question.bool_ask("Do you want to enter the root password again?") {
+                    continue;
+                } else {
+                    ColorManager::set_color(Color::Red);
+                    formatted_print("Installation failed.", PrintFormat::Bordered);
+                    return Err(error);
+                }
+            } else {
+                break;
+            }
+        }
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 18
+    // Code set 19
     {
         installation_status.print("Creating user");
 
-        question.ask("Enter your username: ");
-        run_command("useradd", Some(&["-m", question.answer.as_str()]))?;
+        loop {
+            question.ask("Enter your username: ");
+            if let Err(error) = run_command(
+                "arch-chroot",
+                Some(&["/mnt", "useradd", "-m", question.answer.as_str()]),
+            ) {
+                print_operation_result(OperationResult::Error);
+                if question.bool_ask("Do you want to enter the username again?") {
+                    continue;
+                } else {
+                    ColorManager::set_color(Color::Red);
+                    formatted_print("Installation failed.", PrintFormat::Bordered);
+                    return Err(error);
+                }
+            } else {
+                break;
+            }
+        }
         app_config.username = question.answer.clone();
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 19
+    // Code set 20
     {
         installation_status.print("Setting your user pasword");
 
-        run_command("passwd", Some(&[question.answer.as_str()]))?;
+        loop {
+            if let Err(error) = run_command(
+                "arch-chroot",
+                Some(&["/mnt", "passwd", question.answer.as_str()]),
+            ) {
+                print_operation_result(OperationResult::Error);
+                if question.bool_ask("Do you want to enter the user password again?") {
+                    continue;
+                } else {
+                    ColorManager::set_color(Color::Red);
+                    formatted_print("Installation failed.", PrintFormat::Bordered);
+                    return Err(error);
+                }
+            } else {
+                break;
+            }
+        }
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 20
+    // Code set 21
     {
         installation_status.print("Adding user to wheel group");
 
-        run_command("usermod", Some(&["-aG", "wheel", question.answer.as_str()]))?;
+        run_command(
+            "arch-chroot",
+            Some(&["/mnt", "usermod", "-aG", "wheel", question.answer.as_str()]),
+        )?;
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 21
+    // Code set 22
     {
         installation_status.print("Updating sudoers file");
 
         fs::write(
-            "/etc/sudoers",
-            fs::read_to_string("/etc/sudoers")
-                .expect("Error reading from /etc/sudoers")
+            "/mnt/etc/sudoers",
+            fs::read_to_string("/mnt/etc/sudoers")
+                .expect("Error reading from /mnt/etc/sudoers")
                 .replace("# %wheel ALL=(ALL:ALL) ALL", "%wheel ALL=(ALL:ALL) ALL"),
         )
-        .expect("Error writing to /etc/sudoers");
+        .expect("Error writing to /mnt/etc/sudoers");
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 22
+    // Code set 23
     {
         installation_status.print("Installing grub");
 
         if app_config.uefi_install {
-            run_command("pacman", Some(&["-Sy", "efibootmgr"]))?;
             run_command(
-                "grub-install",
+                "arch-chroot",
+                Some(&["/mnt", "pacman", "-Sy", "efibootmgr", "--noconfirm"]),
+            )?;
+            run_command(
+                "arch-chroot",
                 Some(&[
+                    "/mnt",
+                    "grub-install",
                     "--target=x86_64-efi",
                     "--bootloader-id=grub_uefi",
                     "--recheck",
@@ -505,26 +716,33 @@ fn main() -> Result<(), AppError> {
             "Enter your disk's name the Arch Linux has been installed to. (sda or sdb or ...): ",
         );
             run_command(
-                "grub-install",
+                "arch-chroot",
                 Some(&[
+                    "/mnt",
+                    "grub-install",
                     "--target=i386-pc",
                     format!("/dev/{}", question.answer).as_str(),
                 ]),
             )?;
         }
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 23
+    // Code set 24
     {
         installation_status.print("Configuring grub");
 
         if question.bool_ask("Are you installing Arch Linux alongside Windows?") {
-            run_command("pacman", Some(&["-Sy", "os-prober"]))?;
+            run_command(
+                "arch-chroot",
+                Some(&["/mnt", "pacman", "-Sy", "os-prober", "--noconfirm"]),
+            )?;
 
             fs::write(
-                "/etc/default/grub",
-                fs::read_to_string("/etc/default/grub")
-                    .expect("Error reading from /etc/default/grub")
+                "/mnt/etc/default/grub",
+                fs::read_to_string("/mnt/etc/default/grub")
+                    .expect("Error reading from /mnt/etc/default/grub")
                     .replace(
                         "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 quiet\"",
                         "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3\"",
@@ -534,22 +752,24 @@ fn main() -> Result<(), AppError> {
                         "GRUB_DISABLE_OS_PROBER=false",
                     ),
             )
-            .expect("Error writing to /etc/default/grub");
+            .expect("Error writing to /mnt/etc/default/grub");
         } else {
             fs::write(
-                "/etc/default/grub",
-                fs::read_to_string("/etc/default/grub")
-                    .expect("Error reading from /etc/default/grub")
+                "/mnt/etc/default/grub",
+                fs::read_to_string("/mnt/etc/default/grub")
+                    .expect("Error reading from /mnt/etc/default/grub")
                     .replace(
                         "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 quiet\"",
                         "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3\"",
                     ),
             )
-            .expect("Error writing to /etc/default/grub");
+            .expect("Error writing to /mnt/etc/default/grub");
         }
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 24
+    // Code set 25
     {
         installation_status.print("Configuring and running mkinitcpio if necessary");
 
@@ -558,7 +778,10 @@ fn main() -> Result<(), AppError> {
         let mut writing_string = None;
 
         if has_nvidia_gpu {
-            run_command("pacman", Some(&["-S", "nvidia"]))?;
+            run_command(
+                "arch-chroot",
+                Some(&["/mnt", "pacman", "-Sy", "nvidia", "--noconfirm"]),
+            )?;
 
             writing_string = Some(["MODULES=()", "MODULES=(nvidia)"]);
 
@@ -573,41 +796,63 @@ fn main() -> Result<(), AppError> {
 
         if let Some(writing_string) = writing_string {
             fs::write(
-                "/etc/mkinitcpio.conf",
-                fs::read_to_string("/etc/mkinitcpio.conf")
-                    .expect("Error reading from /etc/mkinitcpio.conf")
+                "/mnt/etc/mkinitcpio.conf",
+                fs::read_to_string("/mnt/etc/mkinitcpio.conf")
+                    .expect("Error reading from /mnt/etc/mkinitcpio.conf")
                     .replace(writing_string[0], writing_string[1]),
             )
-            .expect("Error writing to /etc/mkinitcpio.conf");
+            .expect("Error writing to /mnt/etc/mkinitcpio.conf");
 
-            run_command("mkinitcpio", Some(&["-p", "linux"]))?;
+            if let Err(error) =
+                run_command("arch-chroot", Some(&["/mnt", "mkinitcpio", "-p", "linux"]))
+            {
+                if !question.bool_ask(format!("{error}. This error occured in 'mkiniticpio -p linux' command which can be expected. Given this inforamtion, do you want to continue?").as_str()) {
+                    ColorManager::set_color(Color::Red);
+                    formatted_print("Installation failed.", PrintFormat::Bordered);
+                    return Err(error);
+                }
+            }
         }
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 25
+    // Code set 26
     {
         installation_status.print("Making grub config");
 
-        run_command("grub-mkconfig", Some(&["-o", "/boot/grub/grub.cfg"]))?;
+        run_command(
+            "arch-chroot",
+            Some(&["/mnt", "grub-mkconfig", "-o", "/boot/grub/grub.cfg"]),
+        )?;
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 26
+    // Code set 27
     {
         installation_status.print("Enabling network manager service");
 
-        run_command("systemctl", Some(&["enable", "NetworkManager"]))?;
+        run_command(
+            "arch-chroot",
+            Some(&["/mnt", "systemctl", "enable", "NetworkManager"]),
+        )?;
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 27
+    // Code set 28
     {
         installation_status.print("Installing KDE desktop and applications");
 
         run_command(
-            "pacman",
+            "arch-chroot",
             Some(&[
+                "/mnt",
+                "pacman",
                 "-Sy",
                 "sddm",
-                "bludevil",
+                "bluedevil",
                 "breeze",
                 "breeze-gtk",
                 "kactivitymanagerd",
@@ -645,39 +890,66 @@ fn main() -> Result<(), AppError> {
                 "partitionmanager",
                 "print-manager",
                 "spectacle",
+                "--noconfirm",
             ]),
         )?;
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 28
+    // Code set 29
     {
         installation_status.print("Enabling SDDM service");
 
-        run_command("systemctl", Some(&["enable", "sddm"]))?;
+        run_command(
+            "arch-chroot",
+            Some(&["/mnt", "systemctl", "enable", "sddm"]),
+        )?;
+
+        print_operation_result(OperationResult::Done);
     }
 
-    // Command set 29
+    // Code set 30
     {
         installation_status.print("Installing paru aur helper");
 
         run_command(
-            "cd",
-            Some(&[format!("/home/{}", app_config.username).as_str()]),
+            "arch-chroot",
+            Some(&[
+                "-u",
+                app_config.username.as_str(),
+                "/mnt",
+                "cd",
+                format!("/home/{};", app_config.username).as_str(),
+                "git",
+                "clone",
+                "https://aur.archlinux.org/paru-bin.git",
+            ]),
         )?;
-        run_command("su", Some(&[format!("{}", app_config.username).as_str()]))?;
         run_command(
-            "git",
-            Some(&["clone", "https://aur.archlinux.org/paru-bin.git"]),
+            "arch-chroot",
+            Some(&[
+                "-u",
+                app_config.username.as_str(),
+                "/mnt",
+                "cd",
+                format!("/home/{}/paru-bin;", app_config.username).as_str(),
+                "makepkg",
+                "-si",
+            ]),
         )?;
-        run_command("makepkg", Some(&["-si"]))?;
+
+        print_operation_result(OperationResult::Done);
     }
 
     // Printing 'Installation finished' message.
     {
+        ColorManager::set_color(Color::Cyan);
         formatted_print(
             "Installation finished successfully. You can now reboot.",
             PrintFormat::Bordered,
         );
+        ColorManager::reset_color();
     }
 
     Ok(())
@@ -762,8 +1034,22 @@ fn run_command(command: &str, arguments: Option<&[&str]>) -> Result<(), AppError
         Ok(())
     } else {
         Err(AppError::ExternalError(format!(
-            "Error! external process exited with error code: {}",
+            "Error! External process exited with error code: {}",
             exit_code
         )))
     }
+}
+
+fn print_operation_result(operation_result: OperationResult) {
+    match operation_result {
+        OperationResult::Done => {
+            ColorManager::set_color(Color::Green);
+            formatted_print("Done", PrintFormat::DashedLine);
+        }
+        OperationResult::Error => {
+            ColorManager::set_color(Color::Red);
+            formatted_print("Error", PrintFormat::DashedLine);
+        }
+    }
+    ColorManager::reset_color();
 }
