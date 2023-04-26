@@ -75,7 +75,14 @@ impl error::Error for AppError {}
 
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self)
+        match self {
+            Self::InternalError(internal_error) => {
+                write!(f, "{}", internal_error)
+            }
+            Self::ExternalError(external_error) => {
+                write!(f, "{}", external_error)
+            }
+        }
     }
 }
 
@@ -203,7 +210,7 @@ fn main() -> Result<(), AppError> {
         ColorManager::set_color(Color::Red);
         formatted_print("Arch Linux install script", PrintFormat::Bordered);
         ColorManager::set_color(Color::Green);
-        formatted_print("(Version 0.1.2-alpha)", PrintFormat::DoubleDashedLine);
+        formatted_print("(Version 0.1.3-alpha)", PrintFormat::DoubleDashedLine);
         ColorManager::set_color(Color::Blue);
         formatted_print("Made by Amirhosein_GPR", PrintFormat::Bordered);
         print!("\n\n\n\n\n\n\n\n\n\n");

@@ -1,4 +1,4 @@
 [package]
 name = "arch_linux_installer"
-version = "0.1.2-alpha"
+version = "0.1.3-alpha"
 edition = "2021"
