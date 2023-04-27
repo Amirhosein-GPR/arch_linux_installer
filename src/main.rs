@@ -3,9 +3,11 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::process;
+use std::thread;
+use std::time;
 
 const MAX_LINE_LENGTH: u8 = 64;
-const INSTALLATION_STEPS_COUNT: u8 = 30;
+const INSTALLATION_STEPS_COUNT: u8 = 31;
 
 enum PrintFormat {
     Bordered,
@@ -128,7 +130,7 @@ impl InstallationStatus {
     }
 
     fn print(&mut self, text: &str) {
-        ColorManager::set_color(Color::Blue);
+        TextManager::set_color(TextColor::Blue);
         self.step += 1;
 
         let mut remaining_line_length = MAX_LINE_LENGTH - text.len() as u8;
@@ -159,13 +161,13 @@ impl InstallationStatus {
         } else {
             println!("{}> [{percentage}%] <{}\n", format_string, format_string);
         }
-        ColorManager::reset_color();
+        TextManager::reset_color_and_graphics();
     }
 }
 
 // Colors encoded in ANSI escape code
 #[derive(Clone, Copy)]
-enum Color {
+enum TextColor {
     Reset,
     Black = 30,
     Red,
@@ -178,21 +180,43 @@ enum Color {
     Default = 39,
 }
 
-impl fmt::Display for Color {
+impl fmt::Display for TextColor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", *self as u8)
     }
 }
 
-struct ColorManager;
+#[derive(Clone, Copy)]
+enum TextGraphics {
+    Bold = 1,
+    Dim,
+    Italic,
+    Underline,
+    Blinking,
+    Inverse = 7,
+    Hidden,
+    Strikethrough,
+}
 
-impl ColorManager {
-    fn set_color(color: Color) {
-        print!("\x1b[0;{color}m");
+impl fmt::Display for TextGraphics {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", *self as u8)
+    }
+}
+
+struct TextManager;
+
+impl TextManager {
+    fn set_color(color: TextColor) {
+        print!("\x1b[{color}m");
     }
 
-    fn reset_color() {
-        print!("\x1b[0;{}m", Color::Default);
+    fn set_graphics(graphics: TextGraphics) {
+        print!("\x1b[{graphics}m");
+    }
+
+    fn reset_color_and_graphics() {
+        print!("\x1b[{}m", TextColor::Reset);
     }
 }
 
@@ -207,20 +231,20 @@ fn main() -> Result<(), AppError> {
     // 0. Printing Welcome messages and asking user if he is sure to begin the process.
     {
         print!("\n\n\n\n\n\n\n\n\n\n");
-        ColorManager::set_color(Color::Red);
+        TextManager::set_color(TextColor::Red);
         formatted_print("Arch Linux install script", PrintFormat::Bordered);
-        ColorManager::set_color(Color::Green);
+        TextManager::set_color(TextColor::Green);
         formatted_print("(Version 0.1.3-alpha)", PrintFormat::DoubleDashedLine);
-        ColorManager::set_color(Color::Blue);
+        TextManager::set_color(TextColor::Blue);
         formatted_print("Made by Amirhosein_GPR", PrintFormat::Bordered);
         print!("\n\n\n\n\n\n\n\n\n\n");
 
-        ColorManager::set_color(Color::Magenta);
+        TextManager::set_color(TextColor::Magenta);
         formatted_print(
             format!("Total installation steps: {INSTALLATION_STEPS_COUNT}").as_str(),
             PrintFormat::DoubleDashedLine,
         );
-        ColorManager::reset_color();
+        TextManager::reset_color_and_graphics();
 
         if !question.bool_ask("Do you want to continue?") {
             return Ok(());
@@ -369,7 +393,7 @@ fn main() -> Result<(), AppError> {
             ]),
         )?;
 
-        if let Some(boot_partition) = app_config.boot_partition {
+        if let Some(boot_partition) = &app_config.boot_partition {
             run_command("mkdir", Some(&["-p", "/mnt/boot"]))?;
             run_command(
                 "mount",
@@ -377,7 +401,7 @@ fn main() -> Result<(), AppError> {
             )?;
         }
 
-        if let Some(uefi_partition) = app_config.uefi_partition {
+        if let Some(uefi_partition) = &app_config.uefi_partition {
             run_command("mkdir", Some(&["-p", "/mnt/boot/EFI"]))?;
             run_command(
                 "mount",
@@ -385,7 +409,7 @@ fn main() -> Result<(), AppError> {
             )?;
         }
 
-        if let Some(home_partition) = app_config.home_partition {
+        if let Some(home_partition) = &app_config.home_partition {
             run_command("mkdir", Some(&["-p", "/mnt/home"]))?;
             run_command(
                 "mount",
@@ -517,7 +541,7 @@ fn main() -> Result<(), AppError> {
                 if question.bool_ask("Please enter a forward slash (/) between the continent and city name. Do you want to enter the time zone again?") {
                     continue;
                 } else {
-                    ColorManager::set_color(Color::Red);
+                    TextManager::set_color(TextColor::Red);
                     formatted_print("Installation failed.", PrintFormat::Bordered);
                     return Err(AppError::InternalError(String::from("Error! Internal process exited. Setting time zone failed.")));
                 }
@@ -608,7 +632,7 @@ fn main() -> Result<(), AppError> {
                 if question.bool_ask("Do you want to enter the root password again?") {
                     continue;
                 } else {
-                    ColorManager::set_color(Color::Red);
+                    TextManager::set_color(TextColor::Red);
                     formatted_print("Installation failed.", PrintFormat::Bordered);
                     return Err(error);
                 }
@@ -634,7 +658,7 @@ fn main() -> Result<(), AppError> {
                 if question.bool_ask("Do you want to enter the username again?") {
                     continue;
                 } else {
-                    ColorManager::set_color(Color::Red);
+                    TextManager::set_color(TextColor::Red);
                     formatted_print("Installation failed.", PrintFormat::Bordered);
                     return Err(error);
                 }
@@ -660,7 +684,7 @@ fn main() -> Result<(), AppError> {
                 if question.bool_ask("Do you want to enter the user password again?") {
                     continue;
                 } else {
-                    ColorManager::set_color(Color::Red);
+                    TextManager::set_color(TextColor::Red);
                     formatted_print("Installation failed.", PrintFormat::Bordered);
                     return Err(error);
                 }
@@ -768,7 +792,8 @@ fn main() -> Result<(), AppError> {
                     .replace(
                         "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 quiet\"",
                         "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3\"",
-                    ),
+                    )
+                    .replace("GRUB_TIMEOUT=5", "GRUB_TIMEOUT=0"),
             )
             .expect("Error writing to /mnt/etc/default/grub");
         }
@@ -814,7 +839,7 @@ fn main() -> Result<(), AppError> {
                 run_command("arch-chroot", Some(&["/mnt", "mkinitcpio", "-p", "linux"]))
             {
                 if !question.bool_ask(format!("{error}. This error occured in 'mkiniticpio -p linux' command which can be expected. Given this inforamtion, do you want to continue?").as_str()) {
-                    ColorManager::set_color(Color::Red);
+                    TextManager::set_color(TextColor::Red);
                     formatted_print("Installation failed.", PrintFormat::Bordered);
                     return Err(error);
                 }
@@ -919,6 +944,34 @@ fn main() -> Result<(), AppError> {
     // Code set 30
     {
         installation_status.print("Installing paru aur helper");
+        println!("{}", format!("/home/{}", app_config.username).as_str());
+        run_command(
+            "arch-chroot",
+            Some(&[
+                "-u",
+                app_config.username.as_str(),
+                "/mnt",
+                "git",
+                "clone",
+                "https://aur.archlinux.org/paru-bin.git",
+                format!("/home/{}/paru-bin", app_config.username).as_str(),
+            ]),
+        )?;
+
+        fs::write(
+            format!("/mnt/home/{}/makepkg.sh", app_config.username),
+            format!(
+                "#!/bin/bash\ncd /home/{}/paru-bin\nmakepkg -si",
+                app_config.username
+            ),
+        )
+        .expect(
+            format!(
+                "Error writing to /mnt/home/{}/makepkg.sh",
+                app_config.username
+            )
+            .as_str(),
+        );
 
         run_command(
             "arch-chroot",
@@ -926,11 +979,10 @@ fn main() -> Result<(), AppError> {
                 "-u",
                 app_config.username.as_str(),
                 "/mnt",
-                "cd",
-                format!("/home/{};", app_config.username).as_str(),
-                "git",
-                "clone",
-                "https://aur.archlinux.org/paru-bin.git",
+                "sudo",
+                "chmod",
+                "+x",
+                format!("/home/{}/makepkg.sh", app_config.username).as_str(),
             ]),
         )?;
         run_command(
@@ -939,24 +991,84 @@ fn main() -> Result<(), AppError> {
                 "-u",
                 app_config.username.as_str(),
                 "/mnt",
-                "cd",
-                format!("/home/{}/paru-bin;", app_config.username).as_str(),
-                "makepkg",
-                "-si",
+                format!("/home/{}/makepkg.sh", app_config.username).as_str(),
+            ]),
+        )?;
+
+        run_command(
+            "arch-chroot",
+            Some(&[
+                "/mnt",
+                "rm",
+                format!("/home/{}/makepkg.sh", app_config.username).as_str(),
+            ]),
+        )?;
+
+        run_command(
+            "arch-chroot",
+            Some(&[
+                "/mnt",
+                "rm",
+                "-r",
+                format!("/home/{}/paru-bin", app_config.username).as_str(),
             ]),
         )?;
 
         print_operation_result(OperationResult::Done);
     }
 
-    // Printing 'Installation finished' message.
+    // Code set 31
     {
-        ColorManager::set_color(Color::Cyan);
+        installation_status.print("Unmounting partition(s)");
+
+        if let Some(uefi_partition) = &app_config.uefi_partition {
+            run_command(
+                "umount",
+                Some(&[format!("/dev/{}", uefi_partition).as_str()]),
+            )?;
+            println!("UEFI (/dev/{}): Unmounted", uefi_partition);
+        }
+
+        if let Some(boot_partition) = &app_config.boot_partition {
+            run_command(
+                "umount",
+                Some(&[format!("/dev/{}", boot_partition).as_str()]),
+            )?;
+            println!("Boot (/dev/{}): Unmounted", boot_partition);
+        }
+
+        if let Some(home_partition) = &app_config.home_partition {
+            run_command(
+                "umount",
+                Some(&[format!("/dev/{}", home_partition).as_str()]),
+            )?;
+            println!("Home (/dev/{}): Unmounted", home_partition);
+        }
+
+        run_command(
+            "umount",
+            Some(&[format!("/dev/{}", app_config.root_partition).as_str()]),
+        )?;
+        println!("Root (/dev/{}): Unmounted", app_config.root_partition);
+
+        print_operation_result(OperationResult::Done);
+    }
+
+    // Printing successful installation message.
+    {
+        TextManager::set_color(TextColor::Cyan);
+        formatted_print("Installation finished successfully.", PrintFormat::Bordered);
+
+        TextManager::set_color(TextColor::Cyan);
         formatted_print(
-            "Installation finished successfully. You can now reboot.",
-            PrintFormat::Bordered,
+            "System will restart in 5 seconds.",
+            PrintFormat::DoubleDashedLine,
         );
-        ColorManager::reset_color();
+
+        TextManager::reset_color_and_graphics();
+        thread::sleep(time::Duration::from_secs(5));
+
+        run_command("reboot", None)?;
     }
 
     Ok(())
@@ -1050,13 +1162,13 @@ fn run_command(command: &str, arguments: Option<&[&str]>) -> Result<(), AppError
 fn print_operation_result(operation_result: OperationResult) {
     match operation_result {
         OperationResult::Done => {
-            ColorManager::set_color(Color::Green);
+            TextManager::set_color(TextColor::Green);
             formatted_print("Done", PrintFormat::DashedLine);
         }
         OperationResult::Error => {
-            ColorManager::set_color(Color::Red);
+            TextManager::set_color(TextColor::Red);
             formatted_print("Error", PrintFormat::DashedLine);
         }
     }
-    ColorManager::reset_color();
+    TextManager::reset_color_and_graphics();
 }
