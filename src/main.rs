@@ -1,13 +1,13 @@
 use std::error;
 use std::fmt;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::process;
 use std::thread;
 use std::time;
 
 const MAX_LINE_LENGTH: u8 = 64;
-const INSTALLATION_STEPS_COUNT: u8 = 31;
+const INSTALLATION_STEPS_COUNT: u8 = 34;
 
 enum PrintFormat {
     Bordered,
@@ -101,6 +101,8 @@ struct AppConfig {
     root_partition: String,
     home_partition: Option<String>,
     username: String,
+    encrypted_partitons: bool,
+    swap_partition: Option<String>,
 }
 
 impl AppConfig {
@@ -112,6 +114,8 @@ impl AppConfig {
             root_partition: String::new(),
             home_partition: None,
             username: String::new(),
+            encrypted_partitons: false,
+            swap_partition: None,
         }
     }
 }
@@ -234,7 +238,7 @@ fn main() -> Result<(), AppError> {
         TextManager::set_color(TextColor::Red);
         formatted_print("Arch Linux install script", PrintFormat::Bordered);
         TextManager::set_color(TextColor::Green);
-        formatted_print("(Version 0.1.3-alpha)", PrintFormat::DoubleDashedLine);
+        formatted_print("(Version 0.1.5-alpha)", PrintFormat::DoubleDashedLine);
         TextManager::set_color(TextColor::Blue);
         formatted_print("Made by Amirhosein_GPR", PrintFormat::Bordered);
         print!("\n\n\n\n\n\n\n\n\n\n");
@@ -265,8 +269,16 @@ fn main() -> Result<(), AppError> {
 
         print_operation_result(OperationResult::Done);
     }
-
     // Code set 2
+    {
+        installation_status.print("Encrypted partitoins");
+
+        if question.bool_ask("Do you want to encrypt your root and home partitions?") {
+            app_config.encrypted_partitons = true;
+        }
+    }
+
+    // Code set 3
     {
         installation_status.print("Configuring timedatectl");
 
@@ -276,7 +288,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 3
+    // Code set 4
     {
         installation_status.print("Configuring partitions");
 
@@ -295,7 +307,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 4
+    // Code set 5
     {
         installation_status.print("Getting partition names");
 
@@ -320,14 +332,42 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 5
+    // Code set 6
     {
         installation_status.print("Formatting partitions");
 
         if question.bool_ask("Do you want to format your root partition?") {
+            if app_config.encrypted_partitons {
+                run_command(
+                    "cryptsetup",
+                    Some(&[
+                        "luksFormat",
+                        format!("/dev/{}", app_config.root_partition).as_str(),
+                    ]),
+                )?;
+                run_command(
+                    "cryptsetup",
+                    Some(&[
+                        "open",
+                        format!("/dev/{}", app_config.root_partition).as_str(),
+                        "cryptroot",
+                    ]),
+                )?;
+                run_command("mkfs.btrfs", Some(&["-f", "/dev/mapper/cryptroot"]))?;
+            } else {
+                run_command(
+                    "mkfs.btrfs",
+                    Some(&["-f", format!("/dev/{}", app_config.root_partition).as_str()]),
+                )?;
+            }
+        } else if app_config.encrypted_partitons {
             run_command(
-                "mkfs.btrfs",
-                Some(&["-f", format!("/dev/{}", app_config.root_partition).as_str()]),
+                "cryptsetup",
+                Some(&[
+                    "open",
+                    format!("/dev/{}", app_config.root_partition).as_str(),
+                    "cryptroot",
+                ]),
             )?;
         }
 
@@ -351,9 +391,34 @@ fn main() -> Result<(), AppError> {
 
         if let Some(home_partition) = &app_config.home_partition {
             if question.bool_ask("Do you want to format your home partition?") {
+                if app_config.encrypted_partitons {
+                    run_command(
+                        "cryptsetup",
+                        Some(&["luksFormat", format!("/dev/{}", home_partition).as_str()]),
+                    )?;
+                    run_command(
+                        "cryptsetup",
+                        Some(&[
+                            "open",
+                            format!("/dev/{}", home_partition).as_str(),
+                            "crypthome",
+                        ]),
+                    )?;
+                    run_command("mkfs.btrfs", Some(&["-f", "/dev/mapper/crypthome"]))?;
+                } else {
+                    run_command(
+                        "mkfs.btrfs",
+                        Some(&["-f", format!("/dev/{}", home_partition).as_str()]),
+                    )?;
+                }
+            } else if app_config.encrypted_partitons {
                 run_command(
-                    "mkfs.btrfs",
-                    Some(&["-f", format!("/dev/{}", home_partition).as_str()]),
+                    "cryptsetup",
+                    Some(&[
+                        "open",
+                        format!("/dev/{}", home_partition).as_str(),
+                        "crypthome",
+                    ]),
                 )?;
             }
         }
@@ -361,12 +426,13 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 6
+    // Code set 7
     {
         installation_status.print("Enabling swap");
 
         if question.bool_ask("Do you want to enable swap?") {
             question.ask("Enter name of the swap partition: ");
+            app_config.swap_partition = Some(question.answer.clone());
 
             run_command(
                 "mkswap",
@@ -381,17 +447,21 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 7
+    // Code set 8
     {
         installation_status.print("Mounting partitions");
 
-        run_command(
-            "mount",
-            Some(&[
-                format!("/dev/{}", app_config.root_partition).as_str(),
-                "/mnt",
-            ]),
-        )?;
+        if app_config.encrypted_partitons {
+            run_command("mount", Some(&["/dev/mapper/cryptroot", "/mnt"]))?;
+        } else {
+            run_command(
+                "mount",
+                Some(&[
+                    format!("/dev/{}", app_config.root_partition).as_str(),
+                    "/mnt",
+                ]),
+            )?;
+        }
 
         if let Some(boot_partition) = &app_config.boot_partition {
             run_command("mkdir", Some(&["-p", "/mnt/boot"]))?;
@@ -411,16 +481,20 @@ fn main() -> Result<(), AppError> {
 
         if let Some(home_partition) = &app_config.home_partition {
             run_command("mkdir", Some(&["-p", "/mnt/home"]))?;
-            run_command(
-                "mount",
-                Some(&[format!("/dev/{}", home_partition).as_str(), "/mnt/home"]),
-            )?;
+            if app_config.encrypted_partitons {
+                run_command("mount", Some(&["/dev/mapper/crypthome", "/mnt/home"]))?;
+            } else {
+                run_command(
+                    "mount",
+                    Some(&[format!("/dev/{}", home_partition).as_str(), "/mnt/home"]),
+                )?;
+            }
         }
 
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 8
+    // Code set 9
     {
         installation_status.print("Updating mirrors");
 
@@ -446,7 +520,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 9
+    // Code set 10
     {
         installation_status.print("Configuring pacman");
 
@@ -466,7 +540,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 10
+    // Code set 11
     {
         installation_status.print("Starting to install base system and some softwares");
 
@@ -493,7 +567,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 11
+    // Code set 12
     {
         installation_status.print("Generating file system table");
 
@@ -510,7 +584,44 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 12
+    // Code set 13
+    {
+        installation_status.print("Configuring swap for encryption if necessary");
+        if app_config.encrypted_partitons {
+            if let Some(swap_partition) = &app_config.swap_partition {
+                run_command(
+                    "swapoff",
+                    Some(&[format!("/dev/{}", swap_partition).as_str()]),
+                )?;
+                run_command(
+                    "mkfs.ext2",
+                    Some(&[
+                        "-L",
+                        "cryptswap",
+                        format!("/dev/{}", swap_partition).as_str(),
+                        "1M",
+                    ]),
+                )?;
+
+                let fstab_content = fs::read_to_string("/mnt/etc/fstab")
+                    .expect("Error reading from /mnt/etc/fstab");
+                let found_swap_line = fstab_content
+                    .lines()
+                    .filter(|l| l.contains("swap"))
+                    .collect::<Vec<&str>>()[0];
+                let swap_uuid = found_swap_line.split_whitespace().collect::<Vec<&str>>()[0];
+
+                fs::write(
+                    "/mnt/etc/fstab",
+                    fstab_content.replace(swap_uuid, "/dev/mapper/swap"),
+                )
+                .expect("Error writing to /mnt/etc/fstab");
+            }
+        }
+        print_operation_result(OperationResult::Done);
+    }
+
+    // Code set 14
     {
         installation_status.print("Configuring pacman for installed system");
 
@@ -530,7 +641,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 13
+    // Code set 15
     {
         installation_status.print("Setting time zone");
 
@@ -569,7 +680,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 14
+    // Code set 16
     {
         installation_status.print("Setting hardware clock");
 
@@ -578,7 +689,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 15
+    // Code set 17
     {
         installation_status.print("Setting local");
 
@@ -595,7 +706,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 16
+    // Code set 18
     {
         installation_status.print("Setting host name");
 
@@ -606,7 +717,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 17
+    // Code set 19
     {
         installation_status.print("Setting hosts configuaration");
 
@@ -622,7 +733,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 18
+    // Code set 20
     {
         installation_status.print("Setting root pasword");
 
@@ -644,7 +755,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 19
+    // Code set 21
     {
         installation_status.print("Creating user");
 
@@ -671,7 +782,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 20
+    // Code set 22
     {
         installation_status.print("Setting your user pasword");
 
@@ -696,7 +807,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 21
+    // Code set 23
     {
         installation_status.print("Adding user to wheel group");
 
@@ -708,7 +819,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 22
+    // Code set 24
     {
         installation_status.print("Updating sudoers file");
 
@@ -723,7 +834,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 23
+    // Code set 25
     {
         installation_status.print("Installing grub");
 
@@ -760,7 +871,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 24
+    // Code set 26
     {
         installation_status.print("Configuring grub");
 
@@ -798,10 +909,32 @@ fn main() -> Result<(), AppError> {
             .expect("Error writing to /mnt/etc/default/grub");
         }
 
+        if app_config.encrypted_partitons {
+            let root_uuid = find_uuid_in_blkid_command(&app_config.root_partition)?;
+            let cryptroot_uuid = find_uuid_in_blkid_command("cryptroot")?;
+
+            fs::write(
+                "/mnt/etc/default/grub",
+                fs::read_to_string("/mnt/etc/default/grub")
+                    .expect("Error reading from /mnt/etc/default/grub")
+                    .replace(
+                        "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3\"",
+                        format!(
+                            "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 cryptdevice=UUID={}:cryptroot root=UUID={}\"",
+                            root_uuid,
+                            cryptroot_uuid
+                        )
+                        .as_str(),
+                    )
+                    .replace("GRUB_TIMEOUT=5", "GRUB_TIMEOUT=0"),
+            )
+            .expect("Error writing to /mnt/etc/default/grub");
+        }
+
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 25
+    // Code set 27
     {
         installation_status.print("Configuring and running mkinitcpio if necessary");
 
@@ -834,6 +967,15 @@ fn main() -> Result<(), AppError> {
                     .replace(writing_string[0], writing_string[1]),
             )
             .expect("Error writing to /mnt/etc/mkinitcpio.conf");
+            if app_config.encrypted_partitons {
+                fs::write(
+                "/mnt/etc/mkinitcpio.conf",
+                fs::read_to_string("/mnt/etc/mkinitcpio.conf")
+                    .expect("Error reading from /mnt/etc/mkinitcpio.conf")
+                    .replace("HOOKS=(base udev autodetect modconf kms keyboard keymap consolefont block filesystems fsck)", "HOOKS=(base udev autodetect modconf kms keyboard keymap consolefont block encrypt filesystems fsck)"),
+            )
+            .expect("Error writing to /mnt/etc/mkinitcpio.conf");
+            }
 
             if let Err(error) =
                 run_command("arch-chroot", Some(&["/mnt", "mkinitcpio", "-p", "linux"]))
@@ -849,7 +991,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 26
+    // Code set 28
     {
         installation_status.print("Making grub config");
 
@@ -861,7 +1003,41 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 27
+    // Code set 29
+    {
+        installation_status.print("Configuring crypttab if necessary");
+
+        if app_config.encrypted_partitons {
+            if app_config.swap_partition.is_some() {
+                fs::write(
+                    "/mnt/etc/crypttab",
+                    fs::read_to_string("/mnt/etc/crypttab")
+                        .expect("Error reading from /mnt/etc/crypttab")
+                        .replace("# swap", "swap")
+                        .replace("/dev/sdx4", "LABEL=cryptswap")
+                        .replace("size=256", "size=256,offset=2048"),
+                )
+                .expect("Error writing to /mnt/etc/crypttab");
+            }
+
+            if let Some(home_partition) = &app_config.home_partition {
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .append(true)
+                    .open("/mnt/etc/crypttab")
+                    .expect("Error opening /mnt/etc/crypttab");
+
+                let home_uuid = find_uuid_in_blkid_command(&home_partition)?;
+
+                writeln!(file, "home UUID={} none", home_uuid)
+                    .expect("Error writing to /mnt/etc/crypttab");
+            }
+        }
+
+        print_operation_result(OperationResult::Done);
+    }
+
+    // Code set 30
     {
         installation_status.print("Enabling network manager service");
 
@@ -873,7 +1049,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 28
+    // Code set 31
     {
         installation_status.print("Installing KDE desktop and applications");
 
@@ -929,7 +1105,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 29
+    // Code set 32
     {
         installation_status.print("Enabling SDDM service");
 
@@ -941,7 +1117,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 30
+    // Code set 33
     {
         installation_status.print("Installing paru aur helper");
         println!("{}", format!("/home/{}", app_config.username).as_str());
@@ -1017,7 +1193,7 @@ fn main() -> Result<(), AppError> {
         print_operation_result(OperationResult::Done);
     }
 
-    // Code set 31
+    // Code set 34
     {
         installation_status.print("Unmounting partition(s)");
 
@@ -1038,18 +1214,32 @@ fn main() -> Result<(), AppError> {
         }
 
         if let Some(home_partition) = &app_config.home_partition {
-            run_command(
-                "umount",
-                Some(&[format!("/dev/{}", home_partition).as_str()]),
-            )?;
-            println!("Home (/dev/{}): Unmounted", home_partition);
+            if app_config.encrypted_partitons {
+                run_command("umount", Some(&["/dev/mapper/crypthome"]))?;
+                println!("Home (/dev/mapper/crypthome): Unmounted");
+                run_command("cryptsetup", Some(&["close", "/dev/mapper/crypthome"]))?;
+                println!("Home (/dev/mapper/crypthome): Closed");
+            } else {
+                run_command(
+                    "umount",
+                    Some(&[format!("/dev/{}", home_partition).as_str()]),
+                )?;
+                println!("Home (/dev/{}): Unmounted", home_partition);
+            }
         }
 
-        run_command(
-            "umount",
-            Some(&[format!("/dev/{}", app_config.root_partition).as_str()]),
-        )?;
-        println!("Root (/dev/{}): Unmounted", app_config.root_partition);
+        if app_config.encrypted_partitons {
+            run_command("umount", Some(&["/dev/mapper/cryptroot"]))?;
+            println!("Root (/dev/mapper/cryptroot): Unmounted");
+            run_command("cryptsetup", Some(&["close", "/dev/mapper/cryptroot"]))?;
+            println!("Root (/dev/mapper/cryptroot): Closed");
+        } else {
+            run_command(
+                "umount",
+                Some(&[format!("/dev/{}", app_config.root_partition).as_str()]),
+            )?;
+            println!("Root (/dev/{}): Unmounted", app_config.root_partition);
+        }
 
         print_operation_result(OperationResult::Done);
     }
@@ -1171,4 +1361,27 @@ fn print_operation_result(operation_result: OperationResult) {
         }
     }
     TextManager::reset_color_and_graphics();
+}
+
+fn find_uuid_in_blkid_command(partition_name: &str) -> Result<String, AppError> {
+    let output = String::from_utf8(
+        process::Command::new("arch-chroot")
+            .args(["/mnt", "blkid"])
+            .output()?
+            .stdout,
+    )
+    .expect("Error: Can't make string from vector of bytes.");
+
+    let output_lines = output.lines();
+    let found_line = output_lines
+        .filter(|l| l.contains(partition_name))
+        .collect::<Vec<&str>>()[0];
+
+    let line_segments = found_line.split_whitespace().collect::<Vec<&str>>();
+    let mut partition_uuid = line_segments[1].split("=").collect::<Vec<&str>>()[1].to_string();
+
+    partition_uuid.remove(0);
+    partition_uuid.pop();
+
+    Ok(partition_uuid.to_string())
 }
