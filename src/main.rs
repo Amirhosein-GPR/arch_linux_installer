@@ -238,7 +238,7 @@ fn main() -> Result<(), AppError> {
         TextManager::set_color(TextColor::Red);
         formatted_print("Arch Linux install script", PrintFormat::Bordered);
         TextManager::set_color(TextColor::Green);
-        formatted_print("(Version 0.1.5-alpha)", PrintFormat::DoubleDashedLine);
+        formatted_print("(Version 0.1.6-alpha)", PrintFormat::DoubleDashedLine);
         TextManager::set_color(TextColor::Blue);
         formatted_print("Made by Amirhosein_GPR", PrintFormat::Bordered);
         print!("\n\n\n\n\n\n\n\n\n\n");
@@ -1092,6 +1092,7 @@ fn main() -> Result<(), AppError> {
                 "kalarm",
                 "kcalc",
                 "kdeconnect",
+                "kdialog",
                 "konsole",
                 "ktimer",
                 "okular",
