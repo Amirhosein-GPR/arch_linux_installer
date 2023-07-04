@@ -238,7 +238,7 @@ fn main() -> Result<(), AppError> {
         TextManager::set_color(TextColor::Red);
         formatted_print("Arch Linux install script", PrintFormat::Bordered);
         TextManager::set_color(TextColor::Green);
-        formatted_print("(Version 0.1.6-alpha)", PrintFormat::DoubleDashedLine);
+        formatted_print("(Version 0.1.7-alpha)", PrintFormat::DoubleDashedLine);
         TextManager::set_color(TextColor::Blue);
         formatted_print("Made by Amirhosein_GPR", PrintFormat::Bordered);
         print!("\n\n\n\n\n\n\n\n\n\n");
@@ -1099,7 +1099,7 @@ fn main() -> Result<(), AppError> {
                 "partitionmanager",
                 "print-manager",
                 "spectacle",
-                "--noconfirm",
+                "firefox",
             ]),
         )?;
 
