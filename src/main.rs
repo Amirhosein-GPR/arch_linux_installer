@@ -124,7 +124,7 @@ impl AppConfig {
     }
 
     fn print_installation_status_and_save_config(&mut self, text: &str) {
-        TextManager::set_color(TextColor::Yellow);
+        TextManager::set_color(TextColor::Cyan);
         let mut remaining_line_length = MAX_LINE_LENGTH - text.len() as u8;
         let mut individual_remaining_space = (remaining_line_length - 1) / 2;
 
@@ -328,7 +328,7 @@ fn main() -> Result<(), AppError> {
     let mut app_config = AppConfig::new(INSTALLATION_STEPS_COUNT);
 
     if let Ok(()) = app_config.load_config() {
-        TextManager::set_color(TextColor::Cyan);
+        TextManager::set_color(TextColor::Yellow);
         formatted_print(
             "Aborted installation was detected",
             PrintFormat::DoubleDashedLine,
@@ -1296,17 +1296,22 @@ fn main() -> Result<(), AppError> {
     {
         app_config.remove_config();
 
-        TextManager::set_color(TextColor::Cyan);
+        TextManager::set_color(TextColor::Green);
         formatted_print("Installation finished successfully.", PrintFormat::Bordered);
-
-        TextManager::set_color(TextColor::Cyan);
-        formatted_print(
-            "System will restart in 5 seconds.",
-            PrintFormat::DoubleDashedLine,
-        );
-
+        let mut second = 5;
         TextManager::reset_color_and_graphics();
-        thread::sleep(time::Duration::from_secs(5));
+        println!("\nSystem will restart in:\n");
+        loop {
+            if second == 0 {
+                print!("{second}");
+                break;
+            }
+            print!("{second}...");
+            io::stdout().flush().unwrap();
+            second -= 1;
+            thread::sleep(time::Duration::from_secs(1));
+        }
+        TextManager::reset_color_and_graphics();
 
         run_command("reboot", None)?;
     }
@@ -1442,7 +1447,7 @@ fn print_welcome_message() {
     formatted_print("Arch Linux install script", PrintFormat::Bordered);
     TextManager::set_color(TextColor::Green);
     formatted_print("(Version 0.1.8-alpha)", PrintFormat::DoubleDashedLine);
-    TextManager::set_color(TextColor::Yellow);
+    TextManager::set_color(TextColor::Cyan);
     formatted_print("Made by Amirhosein_GPR", PrintFormat::Bordered);
     print!("\n\n\n\n\n\n\n\n\n\n");
 
