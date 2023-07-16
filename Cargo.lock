@@ -4,4 +4,4 @@ version = 3
 
 [[package]]
 name = "arch_linux_installer"
-version = "0.1.7-alpha"
+version = "0.1.8-alpha"

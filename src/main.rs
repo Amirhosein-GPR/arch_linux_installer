@@ -103,10 +103,12 @@ struct AppConfig {
     username: String,
     encrypted_partitons: bool,
     swap_partition: Option<String>,
+    current_installation_step: u8,
+    total_installation_steps: u8,
 }
 
 impl AppConfig {
-    fn new() -> Self {
+    fn new(total_installation_steps: u8) -> Self {
         Self {
             uefi_install: false,
             uefi_partition: None,
@@ -116,27 +118,13 @@ impl AppConfig {
             username: String::new(),
             encrypted_partitons: false,
             swap_partition: None,
-        }
-    }
-}
-
-struct InstallationStatus {
-    step: u8,
-    total_steps: u8,
-}
-
-impl InstallationStatus {
-    fn new(total_steps: u8) -> Self {
-        Self {
-            step: 0,
-            total_steps,
+            current_installation_step: 1,
+            total_installation_steps,
         }
     }
 
-    fn print(&mut self, text: &str) {
-        TextManager::set_color(TextColor::Blue);
-        self.step += 1;
-
+    fn print_installation_status_and_save_config(&mut self, text: &str) {
+        TextManager::set_color(TextColor::Yellow);
         let mut remaining_line_length = MAX_LINE_LENGTH - text.len() as u8;
         let mut individual_remaining_space = (remaining_line_length - 1) / 2;
 
@@ -152,7 +140,13 @@ impl InstallationStatus {
         let empty_bordered_line = (0..MAX_LINE_LENGTH - 2).map(|_i| " ").collect::<String>();
         println!("|{}|", empty_bordered_line);
 
-        let percentage = (((self.step as f32 / self.total_steps as f32) * 100.0) as u8).to_string();
+        let percentage = format!(
+            "{}/{} | {}",
+            self.current_installation_step,
+            self.total_installation_steps,
+            ((self.current_installation_step as f32 / self.total_installation_steps as f32) * 100.0)
+                as u8
+        );
         remaining_line_length = MAX_LINE_LENGTH - percentage.len() as u8;
         individual_remaining_space = (remaining_line_length - 1) / 2;
 
@@ -166,6 +160,97 @@ impl InstallationStatus {
             println!("{}> [{percentage}%] <{}\n", format_string, format_string);
         }
         TextManager::reset_color_and_graphics();
+
+        self.save_config();
+    }
+
+    fn save_config(&mut self) {
+        let app_config_string = format!(
+            "{}\n{:?}\n{:?}\n{}\n{:?}\n{}\n{}\n{:?}\n{}\n{}",
+            self.uefi_install,
+            self.uefi_partition,
+            self.boot_partition,
+            self.root_partition,
+            self.home_partition,
+            self.username,
+            self.encrypted_partitons,
+            self.swap_partition,
+            self.current_installation_step,
+            self.total_installation_steps
+        );
+
+        fs::write("./arch_linux_installer.conf", app_config_string)
+            .expect("Error writing to ./arch_linux_installer.conf");
+    }
+
+    fn load_config(&mut self) -> Result<(), AppError> {
+        let app_config_string = String::from_utf8(fs::read("./arch_linux_installer.conf")?).expect(
+            "Error converting ./arch_linux_installer.conf contents to a valid UTF-8 string.",
+        );
+
+        let app_config_elements = app_config_string.split("\n").collect::<Vec<_>>();
+
+        self.uefi_install = if app_config_elements[0] == "true" {
+            true
+        } else {
+            false
+        };
+        self.uefi_partition = if app_config_elements[1] == "None" {
+            None
+        } else {
+            Some(Self::extract_some_value(app_config_elements[1]))
+        };
+        self.boot_partition = if app_config_elements[2] == "None" {
+            None
+        } else {
+            Some(Self::extract_some_value(app_config_elements[2]))
+        };
+        self.root_partition = app_config_elements[3].to_string();
+        self.home_partition = if app_config_elements[4] == "None" {
+            None
+        } else {
+            Some(Self::extract_some_value(app_config_elements[4]))
+        };
+        self.username = app_config_elements[5].to_string();
+        self.encrypted_partitons = if app_config_elements[6] == "true" {
+            true
+        } else {
+            false
+        };
+        self.swap_partition = if app_config_elements[7] == "None" {
+            None
+        } else {
+            Some(Self::extract_some_value(app_config_elements[7]))
+        };
+        self.current_installation_step = app_config_elements[8]
+            .parse()
+            .expect("Error parsing string to u8");
+        self.total_installation_steps = app_config_elements[9]
+            .parse()
+            .expect("Error parsing string to u8");
+
+        Ok(())
+    }
+
+    fn remove_config(&self) {
+        fs::remove_file("./arch_linux_installer.conf")
+            .expect("Error removing ./arch_linux_installer.conf")
+    }
+
+    fn extract_some_value(some: &str) -> String {
+        some.split("\"").collect::<Vec<_>>()[1].to_string()
+    }
+
+    fn reset(&mut self) {
+        self.uefi_install = false;
+        self.uefi_partition = None;
+        self.boot_partition = None;
+        self.root_partition = String::new();
+        self.home_partition = None;
+        self.username = String::new();
+        self.encrypted_partitons = false;
+        self.swap_partition = None;
+        self.current_installation_step = 1;
     }
 }
 
@@ -232,688 +317,648 @@ enum OperationResult {
 fn main() -> Result<(), AppError> {
     // Initializing question struct to use it in various parts of the program.
     let mut question = Question::new();
-    // 0. Printing Welcome messages and asking user if he is sure to begin the process.
-    {
-        print!("\n\n\n\n\n\n\n\n\n\n");
-        TextManager::set_color(TextColor::Red);
-        formatted_print("Arch Linux install script", PrintFormat::Bordered);
-        TextManager::set_color(TextColor::Green);
-        formatted_print("(Version 0.1.7-alpha)", PrintFormat::DoubleDashedLine);
-        TextManager::set_color(TextColor::Blue);
-        formatted_print("Made by Amirhosein_GPR", PrintFormat::Bordered);
-        print!("\n\n\n\n\n\n\n\n\n\n");
 
-        TextManager::set_color(TextColor::Magenta);
-        formatted_print(
-            format!("Total installation steps: {INSTALLATION_STEPS_COUNT}").as_str(),
-            PrintFormat::DoubleDashedLine,
-        );
-        TextManager::reset_color_and_graphics();
+    print_welcome_message();
 
-        if !question.bool_ask("Do you want to continue?") {
-            return Ok(());
-        }
+    if !question.bool_ask("Do you want to continue?") {
+        return Ok(());
     }
 
     // Initializing app_config struct to use it in various parts of the program.
-    let mut app_config = AppConfig::new();
-    let mut installation_status = InstallationStatus::new(INSTALLATION_STEPS_COUNT);
-    // Code set 1
-    {
-        installation_status.print("BIOS / UEFI Installation mode");
+    let mut app_config = AppConfig::new(INSTALLATION_STEPS_COUNT);
 
-        question.selecting_ask("Which installation mode do you want?", &["BIOS", "UEFI"]);
-        if question.answer == "2" {
-            app_config.uefi_install = true;
-        }
-
-        print_operation_result(OperationResult::Done);
-    }
-    // Code set 2
-    {
-        installation_status.print("Encrypted partitoins");
-
-        if question.bool_ask("Do you want to encrypt your root and home partitions?") {
-            app_config.encrypted_partitons = true;
+    if let Ok(()) = app_config.load_config() {
+        TextManager::set_color(TextColor::Cyan);
+        formatted_print(
+            "Aborted installation was detected",
+            PrintFormat::DoubleDashedLine,
+        );
+        TextManager::reset_color_and_graphics();
+        if !question.bool_ask(
+            format!(
+                "Do you want to continue installation from step ({}/{})?",
+                app_config.current_installation_step, app_config.total_installation_steps
+            )
+            .as_str(),
+        ) {
+            app_config.reset();
         }
     }
 
-    // Code set 3
-    {
-        installation_status.print("Configuring timedatectl");
+    loop {
+        match app_config.current_installation_step {
+            1 => {
+                app_config
+                    .print_installation_status_and_save_config("BIOS / UEFI Installation mode");
 
-        run_command("timedatectl", Some(&["set-ntp", "true"]))?;
-        run_command("timedatectl", Some(&["status"]))?;
+                question.selecting_ask("Which installation mode do you want?", &["BIOS", "UEFI"]);
+                if question.answer == "2" {
+                    app_config.uefi_install = true;
+                }
 
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 4
-    {
-        installation_status.print("Configuring partitions");
-
-        run_command("fdisk", Some(&["-l"]))?;
-
-        question.ask("Enter the disk you want to partion. (sda, sdb, ...): ");
-        run_command(
-            "fdisk",
-            Some(&[format!("/dev/{}", question.answer).as_str()]),
-        )?;
-
-        println!("Partitioning results:\n");
-
-        run_command("lsblk", None)?;
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 5
-    {
-        installation_status.print("Getting partition names");
-
-        question.ask("Enter the name of your root partition: ");
-        app_config.root_partition = question.answer.clone();
-
-        if question.bool_ask("Do you have a separate boot partition?") {
-            question.ask("Enter the name of your boot partition: ");
-            app_config.boot_partition = Some(question.answer.clone());
-        }
-
-        if app_config.uefi_install {
-            question.ask("Enter the name of your uefi partition: ");
-            app_config.uefi_partition = Some(question.answer.clone());
-        }
-
-        if question.bool_ask("Do you have a separate home partition?") {
-            question.ask("Enter the name of your home partition: ");
-            app_config.home_partition = Some(question.answer.clone());
-        }
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 6
-    {
-        installation_status.print("Formatting partitions");
-
-        if question.bool_ask("Do you want to format your root partition?") {
-            if app_config.encrypted_partitons {
-                run_command(
-                    "cryptsetup",
-                    Some(&[
-                        "luksFormat",
-                        format!("/dev/{}", app_config.root_partition).as_str(),
-                    ]),
-                )?;
-                run_command(
-                    "cryptsetup",
-                    Some(&[
-                        "open",
-                        format!("/dev/{}", app_config.root_partition).as_str(),
-                        "cryptroot",
-                    ]),
-                )?;
-                run_command("mkfs.btrfs", Some(&["-f", "/dev/mapper/cryptroot"]))?;
-            } else {
-                run_command(
-                    "mkfs.btrfs",
-                    Some(&["-f", format!("/dev/{}", app_config.root_partition).as_str()]),
-                )?;
+                print_operation_result(OperationResult::Done);
             }
-        } else if app_config.encrypted_partitons {
-            run_command(
-                "cryptsetup",
-                Some(&[
-                    "open",
-                    format!("/dev/{}", app_config.root_partition).as_str(),
-                    "cryptroot",
-                ]),
-            )?;
-        }
+            2 => {
+                app_config.print_installation_status_and_save_config("Encrypted partitoins");
 
-        if let Some(boot_partition) = &app_config.boot_partition {
-            if question.bool_ask("Do you want to format your boot partition?") {
-                run_command(
-                    "mkfs.btrfs",
-                    Some(&["-f", format!("/dev/{}", boot_partition).as_str()]),
-                )?;
+                if question.bool_ask("Do you want to encrypt your root and home partitions?") {
+                    app_config.encrypted_partitons = true;
+                }
             }
-        }
+            3 => {
+                app_config.print_installation_status_and_save_config("Configuring timedatectl");
 
-        if let Some(uefi_partition) = &app_config.uefi_partition {
-            if question.bool_ask("Do you want to format your uefi partition?") {
-                run_command(
-                    "mkfs.fat",
-                    Some(&["-F32", format!("/dev/{}", uefi_partition).as_str()]),
-                )?;
+                run_command("timedatectl", Some(&["set-ntp", "true"]))?;
+                run_command("timedatectl", Some(&["status"]))?;
+
+                print_operation_result(OperationResult::Done);
             }
-        }
+            4 => {
+                app_config.print_installation_status_and_save_config("Configuring partitions");
 
-        if let Some(home_partition) = &app_config.home_partition {
-            if question.bool_ask("Do you want to format your home partition?") {
-                if app_config.encrypted_partitons {
-                    run_command(
-                        "cryptsetup",
-                        Some(&["luksFormat", format!("/dev/{}", home_partition).as_str()]),
-                    )?;
+                run_command("fdisk", Some(&["-l"]))?;
+
+                question.ask("Enter the disk you want to partion. (sda, sdb, ...): ");
+                run_command(
+                    "fdisk",
+                    Some(&[format!("/dev/{}", question.answer).as_str()]),
+                )?;
+
+                println!("Partitioning results:\n");
+
+                run_command("lsblk", None)?;
+
+                print_operation_result(OperationResult::Done);
+            }
+            5 => {
+                app_config.print_installation_status_and_save_config("Getting partition names");
+
+                question.ask("Enter the name of your root partition: ");
+                app_config.root_partition = question.answer.clone();
+
+                if question.bool_ask("Do you have a separate boot partition?") {
+                    question.ask("Enter the name of your boot partition: ");
+                    app_config.boot_partition = Some(question.answer.clone());
+                }
+
+                if app_config.uefi_install {
+                    question.ask("Enter the name of your uefi partition: ");
+                    app_config.uefi_partition = Some(question.answer.clone());
+                }
+
+                if question.bool_ask("Do you have a separate home partition?") {
+                    question.ask("Enter the name of your home partition: ");
+                    app_config.home_partition = Some(question.answer.clone());
+                }
+
+                print_operation_result(OperationResult::Done);
+            }
+            6 => {
+                app_config.print_installation_status_and_save_config("Formatting partitions");
+
+                if question.bool_ask("Do you want to format your root partition?") {
+                    if app_config.encrypted_partitons {
+                        run_command(
+                            "cryptsetup",
+                            Some(&[
+                                "luksFormat",
+                                format!("/dev/{}", app_config.root_partition).as_str(),
+                            ]),
+                        )?;
+                        run_command(
+                            "cryptsetup",
+                            Some(&[
+                                "open",
+                                format!("/dev/{}", app_config.root_partition).as_str(),
+                                "cryptroot",
+                            ]),
+                        )?;
+                        run_command("mkfs.btrfs", Some(&["-f", "/dev/mapper/cryptroot"]))?;
+                    } else {
+                        run_command(
+                            "mkfs.btrfs",
+                            Some(&["-f", format!("/dev/{}", app_config.root_partition).as_str()]),
+                        )?;
+                    }
+                } else if app_config.encrypted_partitons {
                     run_command(
                         "cryptsetup",
                         Some(&[
                             "open",
-                            format!("/dev/{}", home_partition).as_str(),
-                            "crypthome",
+                            format!("/dev/{}", app_config.root_partition).as_str(),
+                            "cryptroot",
                         ]),
                     )?;
-                    run_command("mkfs.btrfs", Some(&["-f", "/dev/mapper/crypthome"]))?;
-                } else {
+                }
+
+                if let Some(boot_partition) = &app_config.boot_partition {
+                    if question.bool_ask("Do you want to format your boot partition?") {
+                        run_command(
+                            "mkfs.btrfs",
+                            Some(&["-f", format!("/dev/{}", boot_partition).as_str()]),
+                        )?;
+                    }
+                }
+
+                if let Some(uefi_partition) = &app_config.uefi_partition {
+                    if question.bool_ask("Do you want to format your uefi partition?") {
+                        run_command(
+                            "mkfs.fat",
+                            Some(&["-F32", format!("/dev/{}", uefi_partition).as_str()]),
+                        )?;
+                    }
+                }
+
+                if let Some(home_partition) = &app_config.home_partition {
+                    if question.bool_ask("Do you want to format your home partition?") {
+                        if app_config.encrypted_partitons {
+                            run_command(
+                                "cryptsetup",
+                                Some(&["luksFormat", format!("/dev/{}", home_partition).as_str()]),
+                            )?;
+                            run_command(
+                                "cryptsetup",
+                                Some(&[
+                                    "open",
+                                    format!("/dev/{}", home_partition).as_str(),
+                                    "crypthome",
+                                ]),
+                            )?;
+                            run_command("mkfs.btrfs", Some(&["-f", "/dev/mapper/crypthome"]))?;
+                        } else {
+                            run_command(
+                                "mkfs.btrfs",
+                                Some(&["-f", format!("/dev/{}", home_partition).as_str()]),
+                            )?;
+                        }
+                    } else if app_config.encrypted_partitons {
+                        run_command(
+                            "cryptsetup",
+                            Some(&[
+                                "open",
+                                format!("/dev/{}", home_partition).as_str(),
+                                "crypthome",
+                            ]),
+                        )?;
+                    }
+                }
+
+                print_operation_result(OperationResult::Done);
+            }
+            7 => {
+                app_config.print_installation_status_and_save_config("Enabling swap");
+
+                if question.bool_ask("Do you want to enable swap?") {
+                    question.ask("Enter name of the swap partition: ");
+                    app_config.swap_partition = Some(question.answer.clone());
+
                     run_command(
-                        "mkfs.btrfs",
-                        Some(&["-f", format!("/dev/{}", home_partition).as_str()]),
+                        "mkswap",
+                        Some(&[format!("/dev/{}", question.answer).as_str()]),
+                    )?;
+                    run_command(
+                        "swapon",
+                        Some(&[format!("/dev/{}", question.answer).as_str()]),
                     )?;
                 }
-            } else if app_config.encrypted_partitons {
-                run_command(
-                    "cryptsetup",
-                    Some(&[
-                        "open",
-                        format!("/dev/{}", home_partition).as_str(),
-                        "crypthome",
-                    ]),
-                )?;
+
+                print_operation_result(OperationResult::Done);
             }
-        }
+            8 => {
+                app_config.print_installation_status_and_save_config("Mounting partitions");
 
-        print_operation_result(OperationResult::Done);
-    }
+                if app_config.encrypted_partitons {
+                    run_command("mount", Some(&["/dev/mapper/cryptroot", "/mnt"]))?;
+                } else {
+                    run_command(
+                        "mount",
+                        Some(&[
+                            format!("/dev/{}", app_config.root_partition).as_str(),
+                            "/mnt",
+                        ]),
+                    )?;
+                }
 
-    // Code set 7
-    {
-        installation_status.print("Enabling swap");
+                if let Some(boot_partition) = &app_config.boot_partition {
+                    run_command("mkdir", Some(&["-p", "/mnt/boot"]))?;
+                    run_command(
+                        "mount",
+                        Some(&[format!("/dev/{}", boot_partition).as_str(), "/mnt/boot"]),
+                    )?;
+                }
 
-        if question.bool_ask("Do you want to enable swap?") {
-            question.ask("Enter name of the swap partition: ");
-            app_config.swap_partition = Some(question.answer.clone());
+                if let Some(uefi_partition) = &app_config.uefi_partition {
+                    run_command("mkdir", Some(&["-p", "/mnt/boot/EFI"]))?;
+                    run_command(
+                        "mount",
+                        Some(&[format!("/dev/{}", uefi_partition).as_str(), "/mnt/boot/EFI"]),
+                    )?;
+                }
 
-            run_command(
-                "mkswap",
-                Some(&[format!("/dev/{}", question.answer).as_str()]),
-            )?;
-            run_command(
-                "swapon",
-                Some(&[format!("/dev/{}", question.answer).as_str()]),
-            )?;
-        }
+                if let Some(home_partition) = &app_config.home_partition {
+                    run_command("mkdir", Some(&["-p", "/mnt/home"]))?;
+                    if app_config.encrypted_partitons {
+                        run_command("mount", Some(&["/dev/mapper/crypthome", "/mnt/home"]))?;
+                    } else {
+                        run_command(
+                            "mount",
+                            Some(&[format!("/dev/{}", home_partition).as_str(), "/mnt/home"]),
+                        )?;
+                    }
+                }
 
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 8
-    {
-        installation_status.print("Mounting partitions");
-
-        if app_config.encrypted_partitons {
-            run_command("mount", Some(&["/dev/mapper/cryptroot", "/mnt"]))?;
-        } else {
-            run_command(
-                "mount",
-                Some(&[
-                    format!("/dev/{}", app_config.root_partition).as_str(),
-                    "/mnt",
-                ]),
-            )?;
-        }
-
-        if let Some(boot_partition) = &app_config.boot_partition {
-            run_command("mkdir", Some(&["-p", "/mnt/boot"]))?;
-            run_command(
-                "mount",
-                Some(&[format!("/dev/{}", boot_partition).as_str(), "/mnt/boot"]),
-            )?;
-        }
-
-        if let Some(uefi_partition) = &app_config.uefi_partition {
-            run_command("mkdir", Some(&["-p", "/mnt/boot/EFI"]))?;
-            run_command(
-                "mount",
-                Some(&[format!("/dev/{}", uefi_partition).as_str(), "/mnt/boot/EFI"]),
-            )?;
-        }
-
-        if let Some(home_partition) = &app_config.home_partition {
-            run_command("mkdir", Some(&["-p", "/mnt/home"]))?;
-            if app_config.encrypted_partitons {
-                run_command("mount", Some(&["/dev/mapper/crypthome", "/mnt/home"]))?;
-            } else {
-                run_command(
-                    "mount",
-                    Some(&[format!("/dev/{}", home_partition).as_str(), "/mnt/home"]),
-                )?;
+                print_operation_result(OperationResult::Done);
             }
-        }
+            9 => {
+                app_config.print_installation_status_and_save_config("Updating mirrors");
 
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 9
-    {
-        installation_status.print("Updating mirrors");
-
-        question.ask(
-        "Enter the name of your prefered country for mirrors. (For example: France,Germany,...): ",
-    );
-        run_command(
-            "reflector",
-            Some(&[
-                "--latest",
-                "10",
-                "--country",
-                question.answer.as_str(),
-                "--protocol",
-                "http,https",
-                "--sort",
-                "rate",
-                "--save",
-                "/etc/pacman.d/mirrorlist",
-            ]),
-        )?;
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 10
-    {
-        installation_status.print("Configuring pacman");
-
-        fs::write(
-            "/etc/pacman.conf",
-            fs::read_to_string("/etc/pacman.conf")
-                .expect("Error reading from /etc/pacman.conf")
-                .replace("#Color", "Color")
-                .replace("#VerbosePkgLists", "VerbosePkgLists")
-                .replace(
-                    "#ParallelDownloads = 5",
-                    "ParallelDownloads = 5\nILoveCandy",
-                ),
-        )
-        .expect("Error writing to /etc/pacman.conf");
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 11
-    {
-        installation_status.print("Starting to install base system and some softwares");
-
-        question.ask("What is your system's CPU brand? (Enter 'amd' or 'intel'): ");
-        run_command(
-            "pacstrap",
-            Some(&[
-                "/mnt",
-                "base",
-                "linux",
-                "linux-firmware",
-                format!("{}-ucode", question.answer).as_str(),
-                "sudo",
-                "helix",
-                "grub",
-                "dosfstools",
-                "mtools",
-                "networkmanager",
-                "git",
-                "base-devel",
-            ]),
-        )?;
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 12
-    {
-        installation_status.print("Generating file system table");
-
-        let output = String::from_utf8(
-            process::Command::new("genfstab")
-                .args(["-U", "/mnt"])
-                .output()?
-                .stdout,
-        )
-        .expect("Error: Can't make string from vector of bytes.");
-
-        fs::write("/mnt/etc/fstab", output).expect("Error writing to /mnt/etc/fstab");
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 13
-    {
-        installation_status.print("Configuring swap for encryption if necessary");
-        if app_config.encrypted_partitons {
-            if let Some(swap_partition) = &app_config.swap_partition {
+                question.ask("Enter the name of your prefered country for mirrors. (For example: France,Germany,...): ");
                 run_command(
-                    "swapoff",
-                    Some(&[format!("/dev/{}", swap_partition).as_str()]),
-                )?;
-                run_command(
-                    "mkfs.ext2",
+                    "reflector",
                     Some(&[
-                        "-L",
-                        "cryptswap",
-                        format!("/dev/{}", swap_partition).as_str(),
-                        "1M",
+                        "--latest",
+                        "10",
+                        "--country",
+                        question.answer.as_str(),
+                        "--protocol",
+                        "http,https",
+                        "--sort",
+                        "rate",
+                        "--save",
+                        "/etc/pacman.d/mirrorlist",
                     ]),
                 )?;
 
-                let fstab_content = fs::read_to_string("/mnt/etc/fstab")
-                    .expect("Error reading from /mnt/etc/fstab");
-                let found_swap_line = fstab_content
-                    .lines()
-                    .filter(|l| l.contains("swap"))
-                    .collect::<Vec<&str>>()[0];
-                let swap_uuid = found_swap_line.split_whitespace().collect::<Vec<&str>>()[0];
+                print_operation_result(OperationResult::Done);
+            }
+            10 => {
+                app_config.print_installation_status_and_save_config("Configuring pacman");
 
                 fs::write(
-                    "/mnt/etc/fstab",
-                    fstab_content.replace(swap_uuid, "/dev/mapper/swap"),
+                    "/etc/pacman.conf",
+                    fs::read_to_string("/etc/pacman.conf")
+                        .expect("Error reading from /etc/pacman.conf")
+                        .replace("#Color", "Color")
+                        .replace("#VerbosePkgLists", "VerbosePkgLists")
+                        .replace(
+                            "#ParallelDownloads = 5",
+                            "ParallelDownloads = 5\nILoveCandy",
+                        ),
                 )
-                .expect("Error writing to /mnt/etc/fstab");
+                .expect("Error writing to /etc/pacman.conf");
+
+                print_operation_result(OperationResult::Done);
             }
-        }
-        print_operation_result(OperationResult::Done);
-    }
+            11 => {
+                app_config.print_installation_status_and_save_config(
+                    "Starting to install base system and some softwares",
+                );
 
-    // Code set 14
-    {
-        installation_status.print("Configuring pacman for installed system");
+                question.ask("What is your system's CPU brand? (Enter 'amd' or 'intel'): ");
+                run_command(
+                    "pacstrap",
+                    Some(&[
+                        "/mnt",
+                        "base",
+                        "linux",
+                        "linux-firmware",
+                        format!("{}-ucode", question.answer).as_str(),
+                        "sudo",
+                        "helix",
+                        "grub",
+                        "dosfstools",
+                        "mtools",
+                        "networkmanager",
+                        "git",
+                        "base-devel",
+                    ]),
+                )?;
 
-        fs::write(
-            "/mnt/etc/pacman.conf",
-            fs::read_to_string("/mnt/etc/pacman.conf")
-                .expect("Error reading from /mnt/etc/pacman.conf")
-                .replace("#Color", "Color")
-                .replace("#VerbosePkgLists", "VerbosePkgLists")
-                .replace(
-                    "#ParallelDownloads = 5",
-                    "ParallelDownloads = 5\nILoveCandy",
-                ),
-        )
-        .expect("Error writing to /mnt/etc/pacman.conf");
+                print_operation_result(OperationResult::Done);
+            }
+            12 => {
+                app_config
+                    .print_installation_status_and_save_config("Generating file system table");
 
-        print_operation_result(OperationResult::Done);
-    }
+                let output = String::from_utf8(
+                    process::Command::new("genfstab")
+                        .args(["-U", "/mnt"])
+                        .output()?
+                        .stdout,
+                )
+                .expect("Error: Can't make string from vector of bytes.");
 
-    // Code set 15
-    {
-        installation_status.print("Setting time zone");
+                fs::write("/mnt/etc/fstab", output).expect("Error writing to /mnt/etc/fstab");
 
-        loop {
-            question.ask("Enter your time zone. (For example: Europe/London): ");
-            if !question.answer.contains("/") {
-                print_operation_result(OperationResult::Error);
-                if question.bool_ask("Please enter a forward slash (/) between the continent and city name. Do you want to enter the time zone again?") {
+                print_operation_result(OperationResult::Done);
+            }
+            13 => {
+                app_config.print_installation_status_and_save_config(
+                    "Configuring swap for encryption if necessary",
+                );
+                if app_config.encrypted_partitons {
+                    if let Some(swap_partition) = &app_config.swap_partition {
+                        run_command(
+                            "swapoff",
+                            Some(&[format!("/dev/{}", swap_partition).as_str()]),
+                        )?;
+                        run_command(
+                            "mkfs.ext2",
+                            Some(&[
+                                "-L",
+                                "cryptswap",
+                                format!("/dev/{}", swap_partition).as_str(),
+                                "1M",
+                            ]),
+                        )?;
+
+                        let fstab_content = fs::read_to_string("/mnt/etc/fstab")
+                            .expect("Error reading from /mnt/etc/fstab");
+                        let found_swap_line = fstab_content
+                            .lines()
+                            .filter(|l| l.contains("swap"))
+                            .collect::<Vec<&str>>()[0];
+                        let swap_uuid =
+                            found_swap_line.split_whitespace().collect::<Vec<&str>>()[0];
+
+                        fs::write(
+                            "/mnt/etc/fstab",
+                            fstab_content.replace(swap_uuid, "/dev/mapper/swap"),
+                        )
+                        .expect("Error writing to /mnt/etc/fstab");
+                    }
+                }
+                print_operation_result(OperationResult::Done);
+            }
+            14 => {
+                app_config.print_installation_status_and_save_config(
+                    "Configuring pacman for installed system",
+                );
+
+                fs::write(
+                    "/mnt/etc/pacman.conf",
+                    fs::read_to_string("/mnt/etc/pacman.conf")
+                        .expect("Error reading from /mnt/etc/pacman.conf")
+                        .replace("#Color", "Color")
+                        .replace("#VerbosePkgLists", "VerbosePkgLists")
+                        .replace(
+                            "#ParallelDownloads = 5",
+                            "ParallelDownloads = 5\nILoveCandy",
+                        ),
+                )
+                .expect("Error writing to /mnt/etc/pacman.conf");
+
+                print_operation_result(OperationResult::Done);
+            }
+            15 => {
+                app_config.print_installation_status_and_save_config("Setting time zone");
+
+                loop {
+                    question.ask("Enter your time zone. (For example: Europe/London): ");
+                    if !question.answer.contains("/") {
+                        print_operation_result(OperationResult::Error);
+                        if question.bool_ask("Please enter a forward slash (/) between the continent and city name. Do you want to enter the time zone again?") {
                     continue;
                 } else {
                     TextManager::set_color(TextColor::Red);
                     formatted_print("Installation failed.", PrintFormat::Bordered);
                     return Err(AppError::InternalError(String::from("Error! Internal process exited. Setting time zone failed.")));
                 }
+                    }
+
+                    break;
+                }
+
+                let time_zone_parts = question.answer.split("/").collect::<Vec<_>>();
+                run_command(
+                    "arch-chroot",
+                    Some(&[
+                        "/mnt",
+                        "ln",
+                        "-sf",
+                        format!(
+                            "/mnt/etc/usr/share/zoneinfo/{}/{}",
+                            time_zone_parts[0], time_zone_parts[1]
+                        )
+                        .as_str(),
+                        "/etc/localtime",
+                    ]),
+                )?;
+
+                print_operation_result(OperationResult::Done);
             }
+            16 => {
+                app_config.print_installation_status_and_save_config("Setting hardware clock");
 
-            break;
-        }
+                run_command("arch-chroot", Some(&["/mnt", "hwclock", "--systohc"]))?;
 
-        let time_zone_parts = question.answer.split("/").collect::<Vec<_>>();
-        run_command(
-            "arch-chroot",
-            Some(&[
-                "/mnt",
-                "ln",
-                "-sf",
-                format!(
-                    "/mnt/etc/usr/share/zoneinfo/{}/{}",
-                    time_zone_parts[0], time_zone_parts[1]
+                print_operation_result(OperationResult::Done);
+            }
+            17 => {
+                app_config.print_installation_status_and_save_config("Setting local");
+
+                fs::write(
+                    "/mnt/etc/locale.gen",
+                    fs::read_to_string("/mnt/etc/locale.gen")
+                        .expect("Error reading from /mnt/etc/locale.gen")
+                        .replace("#en_US.UTF-8 UTF-8", "en_US.UTF-8 UTF-8"),
                 )
-                .as_str(),
-                "/etc/localtime",
-            ]),
-        )?;
+                .expect("Error writing to /mnt/etc/locale.gen");
 
-        print_operation_result(OperationResult::Done);
-    }
+                run_command("arch-chroot", Some(&["/mnt", "locale-gen"]))?;
 
-    // Code set 16
-    {
-        installation_status.print("Setting hardware clock");
-
-        run_command("arch-chroot", Some(&["/mnt", "hwclock", "--systohc"]))?;
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 17
-    {
-        installation_status.print("Setting local");
-
-        fs::write(
-            "/mnt/etc/locale.gen",
-            fs::read_to_string("/mnt/etc/locale.gen")
-                .expect("Error reading from /mnt/etc/locale.gen")
-                .replace("#en_US.UTF-8 UTF-8", "en_US.UTF-8 UTF-8"),
-        )
-        .expect("Error writing to /mnt/etc/locale.gen");
-
-        run_command("arch-chroot", Some(&["/mnt", "locale-gen"]))?;
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 18
-    {
-        installation_status.print("Setting host name");
-
-        question.ask("Enter your host name: ");
-        fs::write("/mnt/etc/hostname", question.answer.clone())
-            .expect("Error writing to /mnt/etc/hostname");
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 19
-    {
-        installation_status.print("Setting hosts configuaration");
-
-        fs::write(
-            "/mnt/etc/hosts",
-            format!(
-                "127.0.0.1\tlocalhost\n::1 \t\tlocalhost\n127.0.1.1\t{}.localdomain\t{}",
-                question.answer, question.answer
-            ),
-        )
-        .expect("Error writing to /mnt/etc/hosts");
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 20
-    {
-        installation_status.print("Setting root pasword");
-
-        loop {
-            if let Err(error) = run_command("arch-chroot", Some(&["/mnt", "passwd"])) {
-                print_operation_result(OperationResult::Error);
-                if question.bool_ask("Do you want to enter the root password again?") {
-                    continue;
-                } else {
-                    TextManager::set_color(TextColor::Red);
-                    formatted_print("Installation failed.", PrintFormat::Bordered);
-                    return Err(error);
-                }
-            } else {
-                break;
+                print_operation_result(OperationResult::Done);
             }
-        }
+            18 => {
+                app_config.print_installation_status_and_save_config("Setting host name");
 
-        print_operation_result(OperationResult::Done);
-    }
+                question.ask("Enter your host name: ");
+                fs::write("/mnt/etc/hostname", question.answer.clone())
+                    .expect("Error writing to /mnt/etc/hostname");
 
-    // Code set 21
-    {
-        installation_status.print("Creating user");
-
-        loop {
-            question.ask("Enter your username: ");
-            if let Err(error) = run_command(
-                "arch-chroot",
-                Some(&["/mnt", "useradd", "-m", question.answer.as_str()]),
-            ) {
-                print_operation_result(OperationResult::Error);
-                if question.bool_ask("Do you want to enter the username again?") {
-                    continue;
-                } else {
-                    TextManager::set_color(TextColor::Red);
-                    formatted_print("Installation failed.", PrintFormat::Bordered);
-                    return Err(error);
-                }
-            } else {
-                break;
+                print_operation_result(OperationResult::Done);
             }
-        }
-        app_config.username = question.answer.clone();
+            19 => {
+                app_config
+                    .print_installation_status_and_save_config("Setting hosts configuaration");
 
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 22
-    {
-        installation_status.print("Setting your user pasword");
-
-        loop {
-            if let Err(error) = run_command(
-                "arch-chroot",
-                Some(&["/mnt", "passwd", question.answer.as_str()]),
-            ) {
-                print_operation_result(OperationResult::Error);
-                if question.bool_ask("Do you want to enter the user password again?") {
-                    continue;
-                } else {
-                    TextManager::set_color(TextColor::Red);
-                    formatted_print("Installation failed.", PrintFormat::Bordered);
-                    return Err(error);
-                }
-            } else {
-                break;
-            }
-        }
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 23
-    {
-        installation_status.print("Adding user to wheel group");
-
-        run_command(
-            "arch-chroot",
-            Some(&["/mnt", "usermod", "-aG", "wheel", question.answer.as_str()]),
-        )?;
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 24
-    {
-        installation_status.print("Updating sudoers file");
-
-        fs::write(
-            "/mnt/etc/sudoers",
-            fs::read_to_string("/mnt/etc/sudoers")
-                .expect("Error reading from /mnt/etc/sudoers")
-                .replace("# %wheel ALL=(ALL:ALL) ALL", "%wheel ALL=(ALL:ALL) ALL"),
-        )
-        .expect("Error writing to /mnt/etc/sudoers");
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 25
-    {
-        installation_status.print("Installing grub");
-
-        if app_config.uefi_install {
-            run_command(
-                "arch-chroot",
-                Some(&["/mnt", "pacman", "-Sy", "efibootmgr", "--noconfirm"]),
-            )?;
-            run_command(
-                "arch-chroot",
-                Some(&[
-                    "/mnt",
-                    "grub-install",
-                    "--target=x86_64-efi",
-                    "--bootloader-id=grub_uefi",
-                    "--recheck",
-                ]),
-            )?;
-        } else {
-            question.ask(
-            "Enter your disk's name the Arch Linux has been installed to. (sda or sdb or ...): ",
-        );
-            run_command(
-                "arch-chroot",
-                Some(&[
-                    "/mnt",
-                    "grub-install",
-                    "--target=i386-pc",
-                    format!("/dev/{}", question.answer).as_str(),
-                ]),
-            )?;
-        }
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 26
-    {
-        installation_status.print("Configuring grub");
-
-        if question.bool_ask("Are you installing Arch Linux alongside Windows?") {
-            run_command(
-                "arch-chroot",
-                Some(&["/mnt", "pacman", "-Sy", "os-prober", "--noconfirm"]),
-            )?;
-
-            fs::write(
-                "/mnt/etc/default/grub",
-                fs::read_to_string("/mnt/etc/default/grub")
-                    .expect("Error reading from /mnt/etc/default/grub")
-                    .replace(
-                        "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 quiet\"",
-                        "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3\"",
-                    )
-                    .replace(
-                        "#GRUB_DISABLE_OS_PROBER=false",
-                        "GRUB_DISABLE_OS_PROBER=false",
+                fs::write(
+                    "/mnt/etc/hosts",
+                    format!(
+                        "127.0.0.1\tlocalhost\n::1 \t\tlocalhost\n127.0.1.1\t{}.localdomain\t{}",
+                        question.answer, question.answer
                     ),
-            )
-            .expect("Error writing to /mnt/etc/default/grub");
-        } else {
-            fs::write(
-                "/mnt/etc/default/grub",
-                fs::read_to_string("/mnt/etc/default/grub")
-                    .expect("Error reading from /mnt/etc/default/grub")
-                    .replace(
-                        "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 quiet\"",
-                        "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3\"",
+                )
+                .expect("Error writing to /mnt/etc/hosts");
+
+                print_operation_result(OperationResult::Done);
+            }
+            20 => {
+                app_config.print_installation_status_and_save_config("Setting root pasword");
+
+                loop {
+                    if let Err(error) = run_command("arch-chroot", Some(&["/mnt", "passwd"])) {
+                        print_operation_result(OperationResult::Error);
+                        if question.bool_ask("Do you want to enter the root password again?") {
+                            continue;
+                        } else {
+                            TextManager::set_color(TextColor::Red);
+                            formatted_print("Installation failed.", PrintFormat::Bordered);
+                            return Err(error);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                print_operation_result(OperationResult::Done);
+            }
+            21 => {
+                app_config.print_installation_status_and_save_config("Creating user");
+
+                loop {
+                    question.ask("Enter your username: ");
+                    if let Err(error) = run_command(
+                        "arch-chroot",
+                        Some(&["/mnt", "useradd", "-m", question.answer.as_str()]),
+                    ) {
+                        print_operation_result(OperationResult::Error);
+                        if question.bool_ask("Do you want to enter the username again?") {
+                            continue;
+                        } else {
+                            TextManager::set_color(TextColor::Red);
+                            formatted_print("Installation failed.", PrintFormat::Bordered);
+                            return Err(error);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                app_config.username = question.answer.clone();
+
+                print_operation_result(OperationResult::Done);
+            }
+            22 => {
+                app_config.print_installation_status_and_save_config("Setting your user pasword");
+
+                loop {
+                    if let Err(error) = run_command(
+                        "arch-chroot",
+                        Some(&["/mnt", "passwd", question.answer.as_str()]),
+                    ) {
+                        print_operation_result(OperationResult::Error);
+                        if question.bool_ask("Do you want to enter the user password again?") {
+                            continue;
+                        } else {
+                            TextManager::set_color(TextColor::Red);
+                            formatted_print("Installation failed.", PrintFormat::Bordered);
+                            return Err(error);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                print_operation_result(OperationResult::Done);
+            }
+            23 => {
+                app_config.print_installation_status_and_save_config("Adding user to wheel group");
+
+                run_command(
+                    "arch-chroot",
+                    Some(&["/mnt", "usermod", "-aG", "wheel", question.answer.as_str()]),
+                )?;
+
+                print_operation_result(OperationResult::Done);
+            }
+            24 => {
+                app_config.print_installation_status_and_save_config("Updating sudoers file");
+
+                fs::write(
+                    "/mnt/etc/sudoers",
+                    fs::read_to_string("/mnt/etc/sudoers")
+                        .expect("Error reading from /mnt/etc/sudoers")
+                        .replace("# %wheel ALL=(ALL:ALL) ALL", "%wheel ALL=(ALL:ALL) ALL"),
+                )
+                .expect("Error writing to /mnt/etc/sudoers");
+
+                print_operation_result(OperationResult::Done);
+            }
+            25 => {
+                app_config.print_installation_status_and_save_config("Installing grub");
+
+                if app_config.uefi_install {
+                    run_command(
+                        "arch-chroot",
+                        Some(&["/mnt", "pacman", "-Sy", "efibootmgr", "--noconfirm"]),
+                    )?;
+                    run_command(
+                        "arch-chroot",
+                        Some(&[
+                            "/mnt",
+                            "grub-install",
+                            "--target=x86_64-efi",
+                            "--bootloader-id=grub_uefi",
+                            "--recheck",
+                        ]),
+                    )?;
+                } else {
+                    question.ask("Enter your disk's name the Arch Linux has been installed to. (sda or sdb or ...): ");
+                    run_command(
+                        "arch-chroot",
+                        Some(&[
+                            "/mnt",
+                            "grub-install",
+                            "--target=i386-pc",
+                            format!("/dev/{}", question.answer).as_str(),
+                        ]),
+                    )?;
+                }
+
+                print_operation_result(OperationResult::Done);
+            }
+            26 => {
+                app_config.print_installation_status_and_save_config("Configuring grub");
+
+                if question.bool_ask("Are you installing Arch Linux alongside Windows?") {
+                    run_command(
+                        "arch-chroot",
+                        Some(&["/mnt", "pacman", "-Sy", "os-prober", "--noconfirm"]),
+                    )?;
+
+                    fs::write(
+                        "/mnt/etc/default/grub",
+                        fs::read_to_string("/mnt/etc/default/grub")
+                            .expect("Error reading from /mnt/etc/default/grub")
+                            .replace(
+                                "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 quiet\"",
+                                "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3\"",
+                            )
+                            .replace(
+                                "#GRUB_DISABLE_OS_PROBER=false",
+                                "GRUB_DISABLE_OS_PROBER=false",
+                            ),
                     )
-                    .replace("GRUB_TIMEOUT=5", "GRUB_TIMEOUT=0"),
-            )
-            .expect("Error writing to /mnt/etc/default/grub");
-        }
+                    .expect("Error writing to /mnt/etc/default/grub");
+                } else {
+                    fs::write(
+                        "/mnt/etc/default/grub",
+                        fs::read_to_string("/mnt/etc/default/grub")
+                            .expect("Error reading from /mnt/etc/default/grub")
+                            .replace(
+                                "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 quiet\"",
+                                "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3\"",
+                            )
+                            .replace("GRUB_TIMEOUT=5", "GRUB_TIMEOUT=0"),
+                    )
+                    .expect("Error writing to /mnt/etc/default/grub");
+                }
 
-        if app_config.encrypted_partitons {
-            let root_uuid = find_uuid_in_blkid_command(&app_config.root_partition)?;
-            let cryptroot_uuid = find_uuid_in_blkid_command("cryptroot")?;
+                if app_config.encrypted_partitons {
+                    let root_uuid = find_uuid_in_blkid_command(&app_config.root_partition)?;
+                    let cryptroot_uuid = find_uuid_in_blkid_command("cryptroot")?;
 
-            fs::write(
+                    fs::write(
                 "/mnt/etc/default/grub",
                 fs::read_to_string("/mnt/etc/default/grub")
                     .expect("Error reading from /mnt/etc/default/grub")
@@ -929,324 +974,328 @@ fn main() -> Result<(), AppError> {
                     .replace("GRUB_TIMEOUT=5", "GRUB_TIMEOUT=0"),
             )
             .expect("Error writing to /mnt/etc/default/grub");
-        }
+                }
 
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 27
-    {
-        installation_status.print("Configuring and running mkinitcpio if necessary");
-
-        let has_nvidia_gpu = question.bool_ask("Do you have Nvidia GPU?");
-        let has_intel_gpu = question.bool_ask("Do you have Intel GPU?");
-        let mut writing_string = None;
-
-        if has_nvidia_gpu {
-            run_command(
-                "arch-chroot",
-                Some(&["/mnt", "pacman", "-Sy", "nvidia", "--noconfirm"]),
-            )?;
-
-            writing_string = Some(["MODULES=()", "MODULES=(nvidia)"]);
-
-            if has_intel_gpu {
-                writing_string = Some(["MODULES=()", "MODULES=(i915 nvidia)"]);
+                print_operation_result(OperationResult::Done);
             }
-        } else {
-            if has_intel_gpu {
-                writing_string = Some(["MODULES=()", "MODULES=(i915)"]);
-            }
-        }
+            27 => {
+                app_config.print_installation_status_and_save_config(
+                    "Configuring and running mkinitcpio if necessary",
+                );
 
-        if let Some(writing_string) = writing_string {
-            fs::write(
-                "/mnt/etc/mkinitcpio.conf",
-                fs::read_to_string("/mnt/etc/mkinitcpio.conf")
-                    .expect("Error reading from /mnt/etc/mkinitcpio.conf")
-                    .replace(writing_string[0], writing_string[1]),
-            )
-            .expect("Error writing to /mnt/etc/mkinitcpio.conf");
-            if app_config.encrypted_partitons {
-                fs::write(
+                let has_nvidia_gpu = question.bool_ask("Do you have Nvidia GPU?");
+                let has_intel_gpu = question.bool_ask("Do you have Intel GPU?");
+                let mut writing_string = None;
+
+                if has_nvidia_gpu {
+                    run_command(
+                        "arch-chroot",
+                        Some(&["/mnt", "pacman", "-Sy", "nvidia", "--noconfirm"]),
+                    )?;
+
+                    writing_string = Some(["MODULES=()", "MODULES=(nvidia)"]);
+
+                    if has_intel_gpu {
+                        writing_string = Some(["MODULES=()", "MODULES=(i915 nvidia)"]);
+                    }
+                } else {
+                    if has_intel_gpu {
+                        writing_string = Some(["MODULES=()", "MODULES=(i915)"]);
+                    }
+                }
+
+                if let Some(writing_string) = writing_string {
+                    fs::write(
+                        "/mnt/etc/mkinitcpio.conf",
+                        fs::read_to_string("/mnt/etc/mkinitcpio.conf")
+                            .expect("Error reading from /mnt/etc/mkinitcpio.conf")
+                            .replace(writing_string[0], writing_string[1]),
+                    )
+                    .expect("Error writing to /mnt/etc/mkinitcpio.conf");
+                    if app_config.encrypted_partitons {
+                        fs::write(
                 "/mnt/etc/mkinitcpio.conf",
                 fs::read_to_string("/mnt/etc/mkinitcpio.conf")
                     .expect("Error reading from /mnt/etc/mkinitcpio.conf")
                     .replace("HOOKS=(base udev autodetect modconf kms keyboard keymap consolefont block filesystems fsck)", "HOOKS=(base udev autodetect modconf kms keyboard keymap consolefont block encrypt filesystems fsck)"),
             )
             .expect("Error writing to /mnt/etc/mkinitcpio.conf");
-            }
+                    }
 
-            if let Err(error) =
-                run_command("arch-chroot", Some(&["/mnt", "mkinitcpio", "-p", "linux"]))
-            {
-                if !question.bool_ask(format!("{error}. This error occured in 'mkiniticpio -p linux' command which can be expected. Given this inforamtion, do you want to continue?").as_str()) {
+                    if let Err(error) =
+                        run_command("arch-chroot", Some(&["/mnt", "mkinitcpio", "-p", "linux"]))
+                    {
+                        if !question.bool_ask(format!("{error}. This error occured in 'mkiniticpio -p linux' command which can be expected. Given this inforamtion, do you want to continue?").as_str()) {
                     TextManager::set_color(TextColor::Red);
                     formatted_print("Installation failed.", PrintFormat::Bordered);
                     return Err(error);
                 }
+                    }
+                }
+
+                print_operation_result(OperationResult::Done);
             }
-        }
+            28 => {
+                app_config.print_installation_status_and_save_config("Making grub config");
 
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 28
-    {
-        installation_status.print("Making grub config");
-
-        run_command(
-            "arch-chroot",
-            Some(&["/mnt", "grub-mkconfig", "-o", "/boot/grub/grub.cfg"]),
-        )?;
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 29
-    {
-        installation_status.print("Configuring crypttab if necessary");
-
-        if app_config.encrypted_partitons {
-            if app_config.swap_partition.is_some() {
-                fs::write(
-                    "/mnt/etc/crypttab",
-                    fs::read_to_string("/mnt/etc/crypttab")
-                        .expect("Error reading from /mnt/etc/crypttab")
-                        .replace("# swap", "swap")
-                        .replace("/dev/sdx4", "LABEL=cryptswap")
-                        .replace("size=256", "size=256,offset=2048"),
-                )
-                .expect("Error writing to /mnt/etc/crypttab");
-            }
-
-            if let Some(home_partition) = &app_config.home_partition {
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .append(true)
-                    .open("/mnt/etc/crypttab")
-                    .expect("Error opening /mnt/etc/crypttab");
-
-                let home_uuid = find_uuid_in_blkid_command(&home_partition)?;
-
-                writeln!(file, "home UUID={} none", home_uuid)
-                    .expect("Error writing to /mnt/etc/crypttab");
-            }
-        }
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 30
-    {
-        installation_status.print("Enabling network manager service");
-
-        run_command(
-            "arch-chroot",
-            Some(&["/mnt", "systemctl", "enable", "NetworkManager"]),
-        )?;
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 31
-    {
-        installation_status.print("Installing KDE desktop and applications");
-
-        run_command(
-            "arch-chroot",
-            Some(&[
-                "/mnt",
-                "pacman",
-                "-Sy",
-                "sddm",
-                "bluedevil",
-                "breeze",
-                "breeze-gtk",
-                "kactivitymanagerd",
-                "kde-gtk-config",
-                "kgamma5",
-                "kpipewire",
-                "kscreen",
-                "kscreenlocker",
-                "ksystemstats",
-                "kwayland-integration",
-                "kwin",
-                "libkscreen",
-                "libksysguard",
-                "plasma-desktop",
-                "plasma-disks",
-                "plasma-firewall",
-                "plasma-nm",
-                "plasma-pa",
-                "plasma-systemmonitor",
-                "plasma-workspace",
-                "plasma-workspace-wallpapers",
-                "powerdevil",
-                "sddm-kcm",
-                "systemsettings",
-                "ark",
-                "dolphin",
-                "elisa",
-                "gwenview",
-                "kalarm",
-                "kcalc",
-                "kdeconnect",
-                "kdialog",
-                "konsole",
-                "ktimer",
-                "okular",
-                "partitionmanager",
-                "print-manager",
-                "spectacle",
-                "firefox",
-            ]),
-        )?;
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 32
-    {
-        installation_status.print("Enabling SDDM service");
-
-        run_command(
-            "arch-chroot",
-            Some(&["/mnt", "systemctl", "enable", "sddm"]),
-        )?;
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 33
-    {
-        installation_status.print("Installing paru aur helper");
-        println!("{}", format!("/home/{}", app_config.username).as_str());
-        run_command(
-            "arch-chroot",
-            Some(&[
-                "-u",
-                app_config.username.as_str(),
-                "/mnt",
-                "git",
-                "clone",
-                "https://aur.archlinux.org/paru-bin.git",
-                format!("/home/{}/paru-bin", app_config.username).as_str(),
-            ]),
-        )?;
-
-        fs::write(
-            format!("/mnt/home/{}/makepkg.sh", app_config.username),
-            format!(
-                "#!/bin/bash\ncd /home/{}/paru-bin\nmakepkg -si",
-                app_config.username
-            ),
-        )
-        .expect(
-            format!(
-                "Error writing to /mnt/home/{}/makepkg.sh",
-                app_config.username
-            )
-            .as_str(),
-        );
-
-        run_command(
-            "arch-chroot",
-            Some(&[
-                "-u",
-                app_config.username.as_str(),
-                "/mnt",
-                "sudo",
-                "chmod",
-                "+x",
-                format!("/home/{}/makepkg.sh", app_config.username).as_str(),
-            ]),
-        )?;
-        run_command(
-            "arch-chroot",
-            Some(&[
-                "-u",
-                app_config.username.as_str(),
-                "/mnt",
-                format!("/home/{}/makepkg.sh", app_config.username).as_str(),
-            ]),
-        )?;
-
-        run_command(
-            "arch-chroot",
-            Some(&[
-                "/mnt",
-                "rm",
-                format!("/home/{}/makepkg.sh", app_config.username).as_str(),
-            ]),
-        )?;
-
-        run_command(
-            "arch-chroot",
-            Some(&[
-                "/mnt",
-                "rm",
-                "-r",
-                format!("/home/{}/paru-bin", app_config.username).as_str(),
-            ]),
-        )?;
-
-        print_operation_result(OperationResult::Done);
-    }
-
-    // Code set 34
-    {
-        installation_status.print("Unmounting partition(s)");
-
-        if let Some(uefi_partition) = &app_config.uefi_partition {
-            run_command(
-                "umount",
-                Some(&[format!("/dev/{}", uefi_partition).as_str()]),
-            )?;
-            println!("UEFI (/dev/{}): Unmounted", uefi_partition);
-        }
-
-        if let Some(boot_partition) = &app_config.boot_partition {
-            run_command(
-                "umount",
-                Some(&[format!("/dev/{}", boot_partition).as_str()]),
-            )?;
-            println!("Boot (/dev/{}): Unmounted", boot_partition);
-        }
-
-        if let Some(home_partition) = &app_config.home_partition {
-            if app_config.encrypted_partitons {
-                run_command("umount", Some(&["/dev/mapper/crypthome"]))?;
-                println!("Home (/dev/mapper/crypthome): Unmounted");
-                run_command("cryptsetup", Some(&["close", "/dev/mapper/crypthome"]))?;
-                println!("Home (/dev/mapper/crypthome): Closed");
-            } else {
                 run_command(
-                    "umount",
-                    Some(&[format!("/dev/{}", home_partition).as_str()]),
+                    "arch-chroot",
+                    Some(&["/mnt", "grub-mkconfig", "-o", "/boot/grub/grub.cfg"]),
                 )?;
-                println!("Home (/dev/{}): Unmounted", home_partition);
+
+                print_operation_result(OperationResult::Done);
+            }
+            29 => {
+                app_config
+                    .print_installation_status_and_save_config("Configuring crypttab if necessary");
+
+                if app_config.encrypted_partitons {
+                    if app_config.swap_partition.is_some() {
+                        fs::write(
+                            "/mnt/etc/crypttab",
+                            fs::read_to_string("/mnt/etc/crypttab")
+                                .expect("Error reading from /mnt/etc/crypttab")
+                                .replace("# swap", "swap")
+                                .replace("/dev/sdx4", "LABEL=cryptswap")
+                                .replace("size=256", "size=256,offset=2048"),
+                        )
+                        .expect("Error writing to /mnt/etc/crypttab");
+                    }
+
+                    if let Some(home_partition) = &app_config.home_partition {
+                        let mut file = OpenOptions::new()
+                            .write(true)
+                            .append(true)
+                            .open("/mnt/etc/crypttab")
+                            .expect("Error opening /mnt/etc/crypttab");
+
+                        let home_uuid = find_uuid_in_blkid_command(&home_partition)?;
+
+                        writeln!(file, "home UUID={} none", home_uuid)
+                            .expect("Error writing to /mnt/etc/crypttab");
+                    }
+                }
+
+                print_operation_result(OperationResult::Done);
+            }
+            30 => {
+                app_config
+                    .print_installation_status_and_save_config("Enabling network manager service");
+
+                run_command(
+                    "arch-chroot",
+                    Some(&["/mnt", "systemctl", "enable", "NetworkManager"]),
+                )?;
+
+                print_operation_result(OperationResult::Done);
+            }
+            31 => {
+                app_config.print_installation_status_and_save_config(
+                    "Installing KDE desktop and applications",
+                );
+
+                run_command(
+                    "arch-chroot",
+                    Some(&[
+                        "/mnt",
+                        "pacman",
+                        "-Sy",
+                        "sddm",
+                        "bluedevil",
+                        "breeze",
+                        "breeze-gtk",
+                        "kactivitymanagerd",
+                        "kde-gtk-config",
+                        "kgamma5",
+                        "kpipewire",
+                        "kscreen",
+                        "kscreenlocker",
+                        "ksystemstats",
+                        "kwayland-integration",
+                        "kwin",
+                        "libkscreen",
+                        "libksysguard",
+                        "plasma-desktop",
+                        "plasma-disks",
+                        "plasma-firewall",
+                        "plasma-nm",
+                        "plasma-pa",
+                        "plasma-systemmonitor",
+                        "plasma-workspace",
+                        "plasma-workspace-wallpapers",
+                        "powerdevil",
+                        "sddm-kcm",
+                        "systemsettings",
+                        "ark",
+                        "dolphin",
+                        "elisa",
+                        "gwenview",
+                        "kalarm",
+                        "kcalc",
+                        "kdeconnect",
+                        "kdialog",
+                        "konsole",
+                        "ktimer",
+                        "okular",
+                        "partitionmanager",
+                        "print-manager",
+                        "spectacle",
+                        "firefox",
+                    ]),
+                )?;
+
+                print_operation_result(OperationResult::Done);
+            }
+            32 => {
+                app_config.print_installation_status_and_save_config("Enabling SDDM service");
+
+                run_command(
+                    "arch-chroot",
+                    Some(&["/mnt", "systemctl", "enable", "sddm"]),
+                )?;
+
+                print_operation_result(OperationResult::Done);
+            }
+            33 => {
+                app_config.print_installation_status_and_save_config("Installing paru aur helper");
+                println!("{}", format!("/home/{}", app_config.username).as_str());
+                run_command(
+                    "arch-chroot",
+                    Some(&[
+                        "-u",
+                        app_config.username.as_str(),
+                        "/mnt",
+                        "git",
+                        "clone",
+                        "https://aur.archlinux.org/paru-bin.git",
+                        format!("/home/{}/paru-bin", app_config.username).as_str(),
+                    ]),
+                )?;
+
+                fs::write(
+                    format!("/mnt/home/{}/makepkg.sh", app_config.username),
+                    format!(
+                        "#!/bin/bash\ncd /home/{}/paru-bin\nmakepkg -si",
+                        app_config.username
+                    ),
+                )
+                .expect(
+                    format!(
+                        "Error writing to /mnt/home/{}/makepkg.sh",
+                        app_config.username
+                    )
+                    .as_str(),
+                );
+
+                run_command(
+                    "arch-chroot",
+                    Some(&[
+                        "-u",
+                        app_config.username.as_str(),
+                        "/mnt",
+                        "sudo",
+                        "chmod",
+                        "+x",
+                        format!("/home/{}/makepkg.sh", app_config.username).as_str(),
+                    ]),
+                )?;
+                run_command(
+                    "arch-chroot",
+                    Some(&[
+                        "-u",
+                        app_config.username.as_str(),
+                        "/mnt",
+                        format!("/home/{}/makepkg.sh", app_config.username).as_str(),
+                    ]),
+                )?;
+
+                run_command(
+                    "arch-chroot",
+                    Some(&[
+                        "/mnt",
+                        "rm",
+                        format!("/home/{}/makepkg.sh", app_config.username).as_str(),
+                    ]),
+                )?;
+
+                run_command(
+                    "arch-chroot",
+                    Some(&[
+                        "/mnt",
+                        "rm",
+                        "-r",
+                        format!("/home/{}/paru-bin", app_config.username).as_str(),
+                    ]),
+                )?;
+
+                print_operation_result(OperationResult::Done);
+            }
+            34 => {
+                app_config.print_installation_status_and_save_config("Unmounting partition(s)");
+
+                if let Some(uefi_partition) = &app_config.uefi_partition {
+                    run_command(
+                        "umount",
+                        Some(&[format!("/dev/{}", uefi_partition).as_str()]),
+                    )?;
+                    println!("UEFI (/dev/{}): Unmounted", uefi_partition);
+                }
+
+                if let Some(boot_partition) = &app_config.boot_partition {
+                    run_command(
+                        "umount",
+                        Some(&[format!("/dev/{}", boot_partition).as_str()]),
+                    )?;
+                    println!("Boot (/dev/{}): Unmounted", boot_partition);
+                }
+
+                if let Some(home_partition) = &app_config.home_partition {
+                    if app_config.encrypted_partitons {
+                        run_command("umount", Some(&["/dev/mapper/crypthome"]))?;
+                        println!("Home (/dev/mapper/crypthome): Unmounted");
+                        run_command("cryptsetup", Some(&["close", "/dev/mapper/crypthome"]))?;
+                        println!("Home (/dev/mapper/crypthome): Closed");
+                    } else {
+                        run_command(
+                            "umount",
+                            Some(&[format!("/dev/{}", home_partition).as_str()]),
+                        )?;
+                        println!("Home (/dev/{}): Unmounted", home_partition);
+                    }
+                }
+
+                if app_config.encrypted_partitons {
+                    run_command("umount", Some(&["/dev/mapper/cryptroot"]))?;
+                    println!("Root (/dev/mapper/cryptroot): Unmounted");
+                    run_command("cryptsetup", Some(&["close", "/dev/mapper/cryptroot"]))?;
+                    println!("Root (/dev/mapper/cryptroot): Closed");
+                } else {
+                    run_command(
+                        "umount",
+                        Some(&[format!("/dev/{}", app_config.root_partition).as_str()]),
+                    )?;
+                    println!("Root (/dev/{}): Unmounted", app_config.root_partition);
+                }
+
+                print_operation_result(OperationResult::Done);
+
+                break;
+            }
+            _ => {
+                panic!(
+                    "Undefined step which is not in range: [1, {}]",
+                    app_config.total_installation_steps
+                );
             }
         }
 
-        if app_config.encrypted_partitons {
-            run_command("umount", Some(&["/dev/mapper/cryptroot"]))?;
-            println!("Root (/dev/mapper/cryptroot): Unmounted");
-            run_command("cryptsetup", Some(&["close", "/dev/mapper/cryptroot"]))?;
-            println!("Root (/dev/mapper/cryptroot): Closed");
-        } else {
-            run_command(
-                "umount",
-                Some(&[format!("/dev/{}", app_config.root_partition).as_str()]),
-            )?;
-            println!("Root (/dev/{}): Unmounted", app_config.root_partition);
-        }
-
-        print_operation_result(OperationResult::Done);
+        app_config.current_installation_step += 1;
     }
 
     // Printing successful installation message.
     {
+        app_config.remove_config();
+
         TextManager::set_color(TextColor::Cyan);
         formatted_print("Installation finished successfully.", PrintFormat::Bordered);
 
@@ -1385,4 +1434,22 @@ fn find_uuid_in_blkid_command(partition_name: &str) -> Result<String, AppError> 
     partition_uuid.pop();
 
     Ok(partition_uuid.to_string())
+}
+
+fn print_welcome_message() {
+    print!("\n\n\n\n\n\n\n\n\n\n");
+    TextManager::set_color(TextColor::Red);
+    formatted_print("Arch Linux install script", PrintFormat::Bordered);
+    TextManager::set_color(TextColor::Green);
+    formatted_print("(Version 0.1.8-alpha)", PrintFormat::DoubleDashedLine);
+    TextManager::set_color(TextColor::Yellow);
+    formatted_print("Made by Amirhosein_GPR", PrintFormat::Bordered);
+    print!("\n\n\n\n\n\n\n\n\n\n");
+
+    TextManager::set_color(TextColor::Magenta);
+    formatted_print(
+        format!("Total installation steps: {INSTALLATION_STEPS_COUNT}").as_str(),
+        PrintFormat::DoubleDashedLine,
+    );
+    TextManager::reset_color_and_graphics();
 }
