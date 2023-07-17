@@ -923,7 +923,14 @@ fn main() -> Result<(), AppError> {
                 if question.bool_ask("Are you installing Arch Linux alongside Windows?") {
                     run_command(
                         "arch-chroot",
-                        Some(&["/mnt", "pacman", "-Sy", "os-prober", "--noconfirm"]),
+                        Some(&[
+                            "/mnt",
+                            "pacman",
+                            "-Sy",
+                            "os-prober",
+                            "ntfs-3g",
+                            "--noconfirm",
+                        ]),
                     )?;
 
                     fs::write(
@@ -1446,7 +1453,7 @@ fn print_welcome_message() {
     TextManager::set_color(TextColor::Red);
     formatted_print("Arch Linux install script", PrintFormat::Bordered);
     TextManager::set_color(TextColor::Green);
-    formatted_print("(Version 0.1.9-alpha)", PrintFormat::DoubleDashedLine);
+    formatted_print("(Version 0.1.10-alpha)", PrintFormat::DoubleDashedLine);
     TextManager::set_color(TextColor::Cyan);
     formatted_print("Made by Amirhosein_GPR", PrintFormat::Bordered);
     print!("\n\n\n\n\n\n\n\n\n\n");
